@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "../supabase";
+
+import { createCategory, uploadCatalogImage } from "../api/catalogApi";
 import Loader from "./Loader";
 
 function AddMainCategory({ onSuccess, onBack }) {
@@ -57,42 +58,21 @@ function AddMainCategory({ onSuccess, onBack }) {
     try {
       // 1. Upload image if selected
       if (imageFile) {
-        const fileExt = imageFile.name.split(".").pop();
-        const fileName = `main/category_icon/category_${Date.now()}.${fileExt}`;
-        
-        const { error: uploadError } = await supabase.storage
-          .from("category-icons")
-          .upload(fileName, imageFile);
-
-        if (uploadError) {
-          throw new Error("Image upload failed: " + uploadError.message);
-        }
-
-        const { data: publicUrlData } = supabase.storage.from("category-icons").getPublicUrl(fileName);
-        iconUrl = publicUrlData.publicUrl;
+        const uploadRes = await uploadCatalogImage(imageFile, "category-icons", "main/category_icon");
+        iconUrl = uploadRes.public_url;
       }
 
-      // 2. Insert into main_categories
-      const { error } = await supabase
-        .from("main_categories")
-        .insert([
-          {
-            name: formData.name.trim(),
-            sort_order: formData.sort_order ? parseInt(formData.sort_order) : null,
-            icon_url: iconUrl,
-          },
-        ]);
-
-      if (error) {
-        throw error;
-      }
+      // 2. Insert into main_categories via FastAPI
+      await createCategory({
+        name: formData.name.trim(),
+        sort_order: formData.sort_order ? parseInt(formData.sort_order) : null,
+        icon_url: iconUrl,
+      });
 
       // 3. Success handling
       setShowSuccessModal(true);
       setFormData({ name: "", sort_order: "" });
       setImageFile(null);
-      // onSuccess() will be called when they click OK in the modal
-
     } catch (err) {
       console.error("Error saving main category:", err);
       setInsertError(err.message || "Failed to save category. Please try again.");

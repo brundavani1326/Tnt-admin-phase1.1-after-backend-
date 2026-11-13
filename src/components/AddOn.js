@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "../supabase";
+
+import { createAddon, uploadCatalogImage } from "../api/catalogApi";
 import Loader from "./Loader";
 
 function AddOn({ onSuccess, onBack }) {
@@ -80,53 +81,39 @@ function AddOn({ onSuccess, onBack }) {
   };
 
   const confirmAlert = async () => {
-    // Upload image if a file was selected
     setLoading(true);
     let imageUrl = "";
     if (imageFile) {
-      const fileExt = imageFile.name.split(".").pop();
-      const fileName = `addon_${Date.now()}.${fileExt}`;
-      const { error: uploadError } = await supabase.storage
-        .from("avatars")
-        .upload(fileName, imageFile);
-      if (uploadError) {
+      try {
+        const uploadRes = await uploadCatalogImage(imageFile, "avatars", "addon_images");
+        imageUrl = uploadRes.public_url;
+      } catch (uploadError) {
         setInsertError("Image upload failed: " + uploadError.message);
         setShowAlert(false);
         setLoading(false);
         return;
       }
-      const { data: publicUrlData } = supabase.storage.from("avatars").getPublicUrl(fileName);
-      imageUrl = publicUrlData.publicUrl;
     }
 
-    const { error } = await supabase
-      .from("add_ons")
-      .insert([
-        {
-          title: formData.title.trim(),
-          duration: formData.duration ? parseInt(formData.duration) : null,
-          price: formData.price,
-          original_price: formData.original_price,
-          discount_percent: formData.discount_percent ? parseInt(formData.discount_percent) : null,
-          discount_label: formData.discount_label,
-          tax_percent: formData.tax_percent,
-          sort_order: formData.sort_order ? parseInt(formData.sort_order) : null,
-          work_includes: formData.work_includes,
-          work_not_included: formData.work_not_included,
-          image: imageUrl,
-          description: formData.description,
-          max_quantity: formData.max_quantity ? parseInt(formData.max_quantity) : null,
-          is_active: formData.is_active,
-          service_type: formData.service_type || "ADDITIONAL SERVICES",
-        },
-      ])
-      .select();
+    try {
+      await createAddon({
+        title: formData.title.trim(),
+        duration: formData.duration ? parseInt(formData.duration) : null,
+        price: formData.price,
+        original_price: formData.original_price,
+        discount_percent: formData.discount_percent ? parseInt(formData.discount_percent) : null,
+        discount_label: formData.discount_label,
+        tax_percent: formData.tax_percent,
+        sort_order: formData.sort_order ? parseInt(formData.sort_order) : null,
+        work_includes: formData.work_includes,
+        work_not_included: formData.work_not_included,
+        image: imageUrl,
+        description: formData.description,
+        max_quantity: formData.max_quantity ? parseInt(formData.max_quantity) : null,
+        is_active: formData.is_active,
+        service_type: formData.service_type || "ADDITIONAL SERVICES",
+      });
 
-    if (error) {
-      console.error("Insert Error:", error);
-      setInsertError(error.message || "Failed to save. Check inputs or database connection.");
-      setShowAlert(false);
-    } else {
       setFormData({
         title: "",
         duration: "",
@@ -146,10 +133,14 @@ function AddOn({ onSuccess, onBack }) {
       });
       setImageFile(null);
       if (onSuccess) onSuccess();
+    } catch (err) {
+      console.error("Insert Error:", err);
+      setInsertError(err.message || "Failed to save. Check inputs or database connection.");
+      setShowAlert(false);
+    } finally {
+      setShowAlert(false);
+      setLoading(false);
     }
-
-    setShowAlert(false);
-    setLoading(false);
   };
 
   return (

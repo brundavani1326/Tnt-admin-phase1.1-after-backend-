@@ -1,11 +1,21 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase, supabaseFunctionsUrl } from "../supabase";
+import apiClient from "../api/apiClient";
+import heroImagesApi from "../api/heroImagesApi";
+import scheduleApi from "../api/scheduleApi";
+import pricingApi from "../api/pricingApi";
+import partnerPayoutsApi from "../api/partnerPayoutsApi";
+import staffReferralsApi from "../api/staffReferralsApi";
+import categoryHubApi from "../api/categoryHubApi";
+import staffApi from "../api/staffApi";
+// eslint-disable-next-line no-unused-vars
 import { SUPPORT_PHONE } from "../constants";
 import Services from "./Services";
 import Bookings from "./Bookings";
 import CategoryHubCounts from "./CategoryHubCounts";
 import PromotionalBanners from "./PromotionalBanners";
+import AppConfiguration from "./AppConfiguration";
 import Loader from "./Loader";
 import neatifyLogo from "../neatifylogo.png";
 
@@ -640,15 +650,8 @@ function Dashboard() {
 
   const checkOutOfZoneStaff = useCallback(async () => {
     try {
-      const { data: staffList } = await supabase.from("staff_profile").select("*");
-      if (!staffList || staffList.length === 0) {
-        setOutOfZoneAlert(prev => (prev.show ? { ...prev, show: false, staffId: null } : prev));
-        return;
-      }
-
-      const outStaffList = staffList.filter((s) => {
-        return s.is_out_of_zone === true || s.is_out_of_zone === "true" || s.is_out_of_zone === "TRUE";
-      });
+      const outOfZoneRes = await staffApi.getOutOfZoneStaff();
+      const outStaffList = outOfZoneRes?.items || (Array.isArray(outOfZoneRes) ? outOfZoneRes : []);
 
       // Reset dismissed tracking for staff members who returned to zone (is_out_of_zone is now FALSE)
       setDismissedOutOfZoneStaffIds(prev => {
@@ -668,9 +671,9 @@ function Dashboard() {
         if (activeTarget) {
           let hubName = "N/A";
           try {
-            const { data: hCats } = await supabase.from("hub_category_counts").select("*");
+            const hCats = await categoryHubApi.getAllCategoryHubCounts();
             if (hCats && activeTarget.email) {
-              const matchedHubs = hCats.filter(hc => hc.assigned_staff && hc.assigned_staff.toLowerCase().includes(activeTarget.email.toLowerCase()));
+              const matchedHubs = hCats.filter(hc => hc.assigned_staff && String(hc.assigned_staff).toLowerCase().includes(activeTarget.email.toLowerCase()));
               if (matchedHubs.length > 0) {
                 hubName = Array.from(new Set(matchedHubs.map(h => h.hub).filter(Boolean))).join(", ");
               }
@@ -696,7 +699,7 @@ function Dashboard() {
         setOutOfZoneAlert(prev => (prev.show ? { ...prev, show: false, staffId: null } : prev));
       }
     } catch (err) {
-      console.error("Error checking out of zone staff:", err);
+      console.error("Error checking out of zone staff via API:", err);
     }
   }, [dismissedOutOfZoneStaffIds]);
 
@@ -1011,6 +1014,61 @@ function Dashboard() {
   const fetchStaffCounts = async () => {
     try {
       setLoadingStaffCounts(true);
+
+      // 🚀 Phase 4D: Use FastAPI Admin Dashboard endpoints with resilient fallback
+      try {
+        const [overview, workload] = await Promise.all([
+          apiClient.getDashboardOverview(),
+          apiClient.getStaffWorkload(),
+        ]);
+
+        if (overview && workload) {
+          setStaffCounts({
+            available: overview.available_staff_count,
+            unassignedBookings: overview.unassigned_bookings_count,
+            assignedStaff: workload.assigned_staff,
+            unassignedStaff: workload.unassigned_staff,
+            totalServicesStaff: workload.total_services_staff,
+          });
+          return;
+        }
+      } catch (apiErr) {
+        // Security requirement: HTTP 401 & 403 must deny access and must NOT fall back to direct Supabase business queries
+        if (apiErr.status === 401 || apiErr.status === 403) {
+          console.error("Dashboard API authorization rejected:", apiErr.message);
+          setStaffCounts({
+            available: 0,
+            unassignedBookings: 0,
+            assignedStaff: [],
+            unassignedStaff: [],
+            totalServicesStaff: [],
+          });
+          if (apiErr.status === 401) {
+            apiClient.clearSessionTokens();
+            navigate("/");
+          }
+          return;
+        }
+
+        // Security requirement: Transient-error fallback must NOT override an invalidated or absent session
+        if (!apiClient.getAccessToken()) {
+          console.warn("No active session tokens found; aborting fallback.");
+          setStaffCounts({
+            available: 0,
+            unassignedBookings: 0,
+            assignedStaff: [],
+            unassignedStaff: [],
+            totalServicesStaff: [],
+          });
+          navigate("/");
+          return;
+        }
+
+        // Only allow fallback for transient network (status === 0) or 5xx server errors
+        console.warn("Transient backend failure, falling back to direct Supabase query:", apiErr);
+      }
+
+      // Fallback: direct Supabase query
       // 1. Fetch all staff profiles
       const { data: staffData } = await supabase
         .from("staff_profile")
@@ -1221,7 +1279,13 @@ function Dashboard() {
   };
 
   const confirmLogout = async () => {
-    await supabase.auth.signOut();
+    try {
+      await apiClient.logout();
+    } catch (err) {
+      console.warn("Backend logout error:", err);
+      await supabase.auth.signOut();
+      apiClient.clearSessionTokens();
+    }
     navigate("/");
   };
 
@@ -1458,33 +1522,15 @@ function Dashboard() {
   const fetchCoupons = async () => {
     try {
       setLoadingCoupons(true);
-      // Delete any NEW_USER_WELCOME record in DB offers table if present
-      await supabase.from("offers").delete().eq("service_type", "NEW_USER_WELCOME");
-      localStorage.removeItem("adminNewUserOfferEnabled");
-      localStorage.removeItem("adminNewUserOfferPercent");
       if (allServices.length === 0) {
         await fetchAllServices();
       }
-      const { data, error } = await supabase
-        .from("coupons")
-        .select("*, services(title)")
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        // Fallback if relation is not configured in Supabase PostgREST schema cache
-        const { data: fallbackData, error: fallbackError } = await supabase
-          .from("coupons")
-          .select("*")
-          .order("created_at", { ascending: false });
-        if (fallbackError) throw fallbackError;
-        setCoupons(fallbackData || []);
-      } else {
-        setCoupons(data || []);
-      }
+      const data = await apiClient.getCoupons();
+      setCoupons(data || []);
     } catch (err) {
       console.error("Fetch Coupons Error:", err);
+      setCoupons([]);
     } finally {
-      // Wait, should be false
       setLoadingCoupons(false);
     }
   };
@@ -1503,7 +1549,7 @@ function Dashboard() {
 
     try {
       setLoadingCoupons(true);
-      const insertPayload = {
+      const payload = {
         coupon_code: code.toUpperCase().trim(),
         discount_percentage: parseFloat(discount),
         phone_number: phone.trim(),
@@ -1511,35 +1557,20 @@ function Dashboard() {
       };
 
       if (serviceIds && serviceIds.length > 0) {
-        insertPayload.service_ids = serviceIds;
-        insertPayload.service_id = serviceIds[0];
+        payload.service_ids = serviceIds;
+        payload.service_id = serviceIds[0];
       }
 
-      const { error } = await supabase.from("coupons").insert(insertPayload);
-
-      if (error) {
-        if (error.message && error.message.includes("service_ids")) {
-          // If column service_ids doesn't exist yet, fallback to single column service_id
-          delete insertPayload.service_ids;
-          const { error: fallbackErr } = await supabase
-            .from("coupons")
-            .insert(insertPayload);
-          if (fallbackErr) throw fallbackErr;
-        } else if (error.code === "23505") {
-          triggerAlert("Coupon code already exists!", "Error", "error");
-          return;
-        } else {
-          throw error;
-        }
-      }
+      await apiClient.createCoupon(payload);
 
       setCouponForm({ code: "", discount: "", phone: "", serviceIds: [] });
       setServiceDropdownOpen(false);
       setServiceSearch("");
       fetchCoupons();
+      triggerAlert("Coupon created successfully", "Success", "success");
     } catch (err) {
       console.error("Add Coupon Error:", err);
-      triggerAlert(err.message, "Error", "error");
+      triggerAlert(err.message || "Failed to create coupon", "Error", "error");
     } finally {
       setLoadingCoupons(false);
     }
@@ -1550,16 +1581,12 @@ function Dashboard() {
       "Are you sure you want to delete this coupon?",
       async () => {
         try {
-          const { error } = await supabase
-            .from("coupons")
-            .delete()
-            .eq("id", id);
-          if (error) throw error;
+          await apiClient.deleteCoupon(id);
           fetchCoupons();
           triggerAlert("Coupon deleted successfully", "Success", "success");
         } catch (err) {
           console.error("Delete Coupon Error:", err);
-          triggerAlert(err.message, "Delete Failed", "error");
+          triggerAlert(err.message || "Failed to delete coupon", "Delete Failed", "error");
         }
       },
       "Delete Coupon",
@@ -1568,12 +1595,7 @@ function Dashboard() {
 
   const handleToggleCoupon = async (coupon) => {
     try {
-      const { error } = await supabase
-        .from("coupons")
-        .update({ is_used: !coupon.is_used })
-        .eq("id", coupon.id);
-
-      if (error) throw error;
+      await apiClient.patchCoupon(coupon.id, { is_used: !coupon.is_used });
       fetchCoupons();
     } catch (err) {
       console.error("Toggle Coupon Error:", err);
@@ -1584,26 +1606,21 @@ function Dashboard() {
     try {
       setLoadingOffers(true);
 
-      // 1. Fetch all services for dropdown
-      const { data: servicesData, error: sError } = await supabase
-        .from("services")
-        .select("id, title, service_type")
-        .order("title", { ascending: true });
+      // 1. Fetch all services for dropdown via API
+      try {
+        const servicesData = await apiClient.getServices();
+        setAllServices(servicesData || []);
+      } catch (sError) {
+        console.error("Fetch Services Error:", sError);
+      }
 
-      if (sError) throw sError;
-      setAllServices(servicesData || []);
-
-      // 2. Fetch configured offers from 'offers' table
-      const { data: offersData, error: oError } = await supabase
-        .from("offers")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (oError) {
-        console.warn("Offers table might not exist yet:", oError.message);
-        setOfferList([]);
-      } else {
+      // 2. Fetch configured offers from 'offers' via API
+      try {
+        const offersData = await apiClient.getOffers();
         setOfferList(offersData || []);
+      } catch (oError) {
+        console.warn("Fetch offers error:", oError.message || oError);
+        setOfferList([]);
       }
     } catch (err) {
       console.error("Fetch All Services/Offers Error:", err);
@@ -1626,27 +1643,15 @@ function Dashboard() {
     try {
       setLoadingOffers(true);
 
-      // Get the name/category from allServices state for storage
       const selectedService = allServices.find((s) => s.id === serviceId);
 
-      // Disable all app popups first (Mutual Exclusivity)
-      await supabase
-        .from("app_popups")
-        .update({ is_active: false })
-        .eq("is_active", true);
-
-      const { error } = await supabase.from("offers").upsert(
-        {
-          service_type: selectedService?.service_type || offerForm.category,
-          title: selectedService?.title || "Unknown",
-          offer_percentage: parseFloat(percentage),
-          description: offerForm.description,
-          is_offer_enabled: true,
-        },
-        { onConflict: "service_type,title" },
-      );
-
-      if (error) throw error;
+      await apiClient.createOffer({
+        service_type: selectedService?.service_type || offerForm.category || "GENERAL",
+        title: selectedService?.title || "Unknown",
+        offer_percentage: parseFloat(percentage),
+        description: offerForm.description || "",
+        is_offer_enabled: true,
+      });
 
       setOfferForm({
         category: "",
@@ -1659,60 +1664,50 @@ function Dashboard() {
       triggerAlert("", "Update Success", "success");
     } catch (err) {
       console.error("Update Offer Error:", err);
-      triggerAlert(err.message, "Update Failed", "error");
+      triggerAlert(err.message || "Failed to update offer", "Update Failed", "error");
     } finally {
       setLoadingOffers(false);
     }
   };
 
   const handleToggleOffer = async (offer) => {
-    console.log("FUNCTION CALLED");
+    try {
+      const newStatus = !offer.is_offer_enabled;
+      await apiClient.patchOffer(offer.id, { is_offer_enabled: newStatus });
 
-    const newStatus = !offer.is_offer_enabled;
-
-    await supabase
-      .from("offers")
-      .update({ is_offer_enabled: newStatus })
-      .eq("id", offer.id);
-
-    if (newStatus) {
-      try {
-        const { data, error } = await supabase.functions.invoke(
-          "send-notification",
-          {
+      if (newStatus) {
+        try {
+          await supabase.functions.invoke("send-notification", {
             body: {
               title: "New Offer 🎉",
               body: `${offer.title} is now available!`,
             },
-          }
-        );
-
-        if (error) {
-          console.error("Edge Function Error:", error);
-        } else {
-          console.log("Notification sent:", data);
+          });
+        } catch (err) {
+          console.error("Invoke Error:", err);
         }
-      } catch (err) {
-        console.error("Invoke Error:", err);
       }
-    }
 
-    // ✅ refresh UI
-    fetchAllServices();
+      fetchAllServices();
+      fetchPopups();
+    } catch (err) {
+      console.error("Toggle Offer Error:", err);
+      triggerAlert(err.message || "Failed to toggle offer", "Toggle Failed", "error");
+    }
   };
+
   const handleResetOffer = async (id) => {
     triggerConfirm(
       "Are you sure you want to delete this offer?",
       async () => {
         try {
           setLoadingOffers(true);
-          const { error } = await supabase.from("offers").delete().eq("id", id);
-          if (error) throw error;
+          await apiClient.deleteOffer(id);
           fetchAllServices();
           triggerAlert("Offer deleted successfully", "Success", "success");
         } catch (err) {
           console.error("Delete Offer Error:", err);
-          triggerAlert(err.message, "Delete Failed", "error");
+          triggerAlert(err.message || "Failed to delete offer", "Delete Failed", "error");
         } finally {
           setLoadingOffers(false);
         }
@@ -1725,19 +1720,11 @@ function Dashboard() {
   const fetchPopups = async () => {
     try {
       setLoadingPopups(true);
-      const { data, error } = await supabase
-        .from("app_popups")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        console.warn("app_popups table might not exist:", error.message);
-        setAppPopups([]);
-      } else {
-        setAppPopups(data || []);
-      }
+      const data = await apiClient.getPopups();
+      setAppPopups(data || []);
     } catch (err) {
       console.error("Fetch Popups Error:", err);
+      setAppPopups([]);
     } finally {
       setLoadingPopups(false);
     }
@@ -1763,7 +1750,7 @@ function Dashboard() {
         triggerAlert(
           "The image should maintain an aspect ratio of 7:5, with a recommended resolution of 1906 X 1400 pixels",
           "Upload Error",
-          "error"
+          "error",
         );
         return;
       }
@@ -1774,35 +1761,17 @@ function Dashboard() {
       let imageUrl = "";
 
       if (popupImage) {
-        const fileExt = popupImage.name.split(".").pop();
-        const fileName = `popup_${Date.now()}.${fileExt}`;
-        const { error: uploadError } = await supabase.storage
-          .from("app_popups")
-          .upload(fileName, popupImage);
-
-        if (uploadError) throw uploadError;
-
-        const { data: publicUrlData } = supabase.storage
-          .from("app_popups")
-          .getPublicUrl(fileName);
-        imageUrl = publicUrlData.publicUrl;
+        const uploadRes = await apiClient.uploadPopupImage(popupImage);
+        imageUrl = uploadRes.public_url;
       }
 
-      // Disable all service offers first (Mutual Exclusivity)
-      await supabase
-        .from("offers")
-        .update({ is_offer_enabled: false })
-        .eq("is_offer_enabled", true);
-
-      const { error } = await supabase.from("app_popups").insert({
+      await apiClient.createPopup({
         type: "GENERAL",
         title: popupForm.title,
-        description: popupForm.description,
+        description: popupForm.description || "",
         image_url: imageUrl,
         is_active: true,
       });
-
-      if (error) throw error;
 
       setPopupForm({ title: "", description: "" });
       setPopupImage(null);
@@ -1811,7 +1780,7 @@ function Dashboard() {
       triggerAlert("", "Success", "success");
     } catch (err) {
       console.error("Add Popup Error:", err);
-      triggerAlert(err.message, "Addition Failed", "error");
+      triggerAlert(err.message || "Failed to add popup", "Addition Failed", "error");
     } finally {
       setLoadingPopups(false);
     }
@@ -1820,36 +1789,26 @@ function Dashboard() {
   const handleTogglePopup = async (popup) => {
     try {
       const newStatus = !popup.is_active;
+      await apiClient.patchPopup(popup.id, { is_active: newStatus });
 
       if (newStatus) {
-        await supabase
-          .from("offers")
-          .update({ is_offer_enabled: false })
-          .eq("is_offer_enabled", true);
-      }
-
-      const { error } = await supabase
-        .from("app_popups")
-        .update({ is_active: newStatus })
-        .eq("id", popup.id);
-
-      if (error) throw error;
-
-      // ✅ FIXED NOTIFICATION
-      if (newStatus) {
-        await supabase.functions.invoke("send-notification", {
-          body: {
-            title: popup.title || "New Update 🚀",
-            body: popup.description || "Check it now!",
-          },
-        });
+        try {
+          await supabase.functions.invoke("send-notification", {
+            body: {
+              title: popup.title || "New Update 🚀",
+              body: popup.description || "Check it now!",
+            },
+          });
+        } catch (err) {
+          console.error("Invoke Error:", err);
+        }
       }
 
       fetchPopups();
       fetchAllServices();
     } catch (err) {
       console.error("Toggle Popup Error:", err);
-      triggerAlert(err.message, "Toggle Failed", "error");
+      triggerAlert(err.message || "Failed to toggle popup", "Toggle Failed", "error");
     }
   };
 
@@ -1858,34 +1817,28 @@ function Dashboard() {
       "Are you sure you want to delete this popup announcement?",
       async () => {
         try {
-          const { error } = await supabase
-            .from("app_popups")
-            .delete()
-            .eq("id", id);
-          if (error) throw error;
+          await apiClient.deletePopup(id);
           fetchPopups();
           triggerAlert("Popup deleted successfully", "Success", "success");
         } catch (err) {
           console.error("Delete Popup Error:", err);
-          triggerAlert(err.message, "Delete Failed", "error");
+          triggerAlert(err.message || "Failed to delete popup", "Delete Failed", "error");
         }
       },
       "Delete Popup",
     );
   };
 
-
   // ================== SCHEDULE CONFIG ==================
   const fetchScheduleConfig = async () => {
     try {
       setLoadingSchedule(true);
-      const { data, error } = await supabase.from("schedule_config").select("*");
-      if (error) throw error;
+      const data = await scheduleApi.getScheduleConfig();
 
-      const rawSlots = data.find(item => item.config_key === "time_slots")?.config_value || [];
-      const rawYears = data.find(item => item.config_key === "years")?.config_value || [];
-      const rawRules = data.find(item => item.config_key === "service_time_rules")?.config_value || [];
-      const rawDateSlots = data.find(item => item.config_key === "date_time_slots")?.config_value || {};
+      const rawSlots = data.time_slots || [];
+      const rawYears = data.years || [];
+      const rawRules = data.service_time_rules || [];
+      const rawDateSlots = data.date_time_slots || {};
 
       // Convert legacy string arrays to objects if necessary
       const formatData = (arr) => arr.map(item =>
@@ -1911,12 +1864,7 @@ function Dashboard() {
   const updateScheduleConfig = async (key, newValue) => {
     try {
       setLoadingSchedule(true);
-      const { error } = await supabase
-        .from("schedule_config")
-        .update({ config_value: newValue })
-        .eq("config_key", key);
-
-      if (error) throw error;
+      await scheduleApi.updateScheduleConfigKey(key, newValue);
       fetchScheduleConfig();
       triggerAlert(`${key.replace("_", " ")} updated successfully!`, "Success", "success");
     } catch (err) {
@@ -1927,7 +1875,7 @@ function Dashboard() {
     }
   };
 
-  const addItemToConfig = (key) => {
+  const addItemToConfig = async (key) => {
     if (key === "time_slots") {
       if (!newSlot) return;
 
@@ -1965,12 +1913,22 @@ function Dashboard() {
       setNewYear("");
     } else if (key === "service_time_rules") {
       if (!newServiceName || !newLastBookingTime) return;
-      const updatedRules = [...scheduleConfig.service_time_rules, { service_name: newServiceName, last_booking_time: newLastBookingTime }]
-        .sort((a, b) => a.service_name.localeCompare(b.service_name));
-      setScheduleConfig({ ...scheduleConfig, service_time_rules: updatedRules });
-      updateScheduleConfig("service_time_rules", updatedRules);
-      setNewServiceName("");
-      setNewLastBookingTime("");
+      try {
+        setLoadingSchedule(true);
+        await scheduleApi.addServiceTimeRule({
+          service_name: newServiceName,
+          last_booking_time: newLastBookingTime,
+        });
+        fetchScheduleConfig();
+        triggerAlert("Service time rule added successfully!", "Success", "success");
+        setNewServiceName("");
+        setNewLastBookingTime("");
+      } catch (err) {
+        console.error("Add Service Time Rule Error:", err);
+        triggerAlert(err.message, "Add Error", "error");
+      } finally {
+        setLoadingSchedule(false);
+      }
     }
   };
 
@@ -2007,7 +1965,21 @@ function Dashboard() {
       show: true,
       title: "Confirm Delete",
       message: `Are you sure you want to PERMANENTLY remove "${item.value || item.service_name}"? This action cannot be undone.`,
-      onConfirm: () => {
+      onConfirm: async () => {
+        if (key === "service_time_rules" && item.service_name) {
+          try {
+            setLoadingSchedule(true);
+            await scheduleApi.deleteServiceTimeRule(item.service_name);
+            fetchScheduleConfig();
+            triggerAlert("Service time rule deleted successfully!", "Success", "success");
+          } catch (err) {
+            console.error("Delete Service Time Rule Error:", err);
+            triggerAlert(err.message, "Delete Error", "error");
+          } finally {
+            setLoadingSchedule(false);
+          }
+          return;
+        }
         let updatedValue;
         if (key === "time_slots") {
           updatedValue = scheduleConfig[key].map((it, i) =>
@@ -2093,29 +2065,32 @@ function Dashboard() {
     updateScheduleConfig("date_time_slots", updatedDateTimeSlots);
   };
 
-  const resetDateSlotsToDefault = () => {
+  const resetDateSlotsToDefault = async () => {
     if (!selectedSlotDate) return;
-
-    const updatedDateTimeSlots = { ...scheduleConfig.date_time_slots };
-    delete updatedDateTimeSlots[selectedSlotDate];
-
-    setScheduleConfig({
-      ...scheduleConfig,
-      date_time_slots: updatedDateTimeSlots
-    });
-
-    updateScheduleConfig("date_time_slots", updatedDateTimeSlots);
+    try {
+      setLoadingSchedule(true);
+      await scheduleApi.resetDateSlots(selectedSlotDate);
+      fetchScheduleConfig();
+      triggerAlert(`Reset custom slots for ${selectedSlotDate} to master default!`, "Success", "success");
+    } catch (err) {
+      console.error("Reset Date Slots Error:", err);
+      const updatedDateTimeSlots = { ...scheduleConfig.date_time_slots };
+      delete updatedDateTimeSlots[selectedSlotDate];
+      setScheduleConfig({
+        ...scheduleConfig,
+        date_time_slots: updatedDateTimeSlots
+      });
+      updateScheduleConfig("date_time_slots", updatedDateTimeSlots);
+    } finally {
+      setLoadingSchedule(false);
+    }
   };
   // ================== PRICING TAB ==================
   const fetchPricingServices = async (silent = false, savedId = null) => {
     try {
       if (!silent) setLoadingPricing(true);
-      const { data, error } = await supabase
-        .from("services")
-        .select("*")
-        .order("title", { ascending: true });
+      const data = await pricingApi.getPricingServices();
 
-      if (error) throw error;
       setPricingServices(data || []);
       // Initialize edits from fetched data
       const edits = {};
@@ -2130,7 +2105,7 @@ function Dashboard() {
           title: s.title || "",
           price: s.price || "",
           discount_percent: s.discount_percent || 0,
-          admin_amount: calculateAdminAmount(s.price, s.staff_amount, s.discount_percent),
+          admin_amount: s.admin_amount || calculateAdminAmount(s.price, s.staff_amount, s.discount_percent),
           staff_amount: formatWithRupee(s.staff_amount),
         };
       });
@@ -2188,81 +2163,132 @@ function Dashboard() {
     return formatWithRupee(adminNum);
   };
 
-
   const handleSaveAllPricing = async () => {
     try {
       setLoadingAllPricing(true);
 
-      const payload = pricingServices.map(service => {
-        const edit = pricingEdits[service.id];
-        if (!edit) return null;
+      const formatWithRupee = (val) => {
+        if (!val && val !== 0) return "";
+        let str = String(val).trim();
+        if (!str) return "";
 
-        const formatWithRupee = (val) => {
-          if (!val) return "";
-          let str = String(val).trim();
-          if (!str) return "";
+        // If it already has rupee symbol anywhere (like -₹100 or ₹100), return as is
+        if (str.includes("₹")) return str;
 
-          // If it already has rupee symbol anywhere (like -₹100 or ₹100), return as is
-          if (str.includes("₹")) return str;
+        const isNegative = str.startsWith("-");
+        const absVal = str.replace("-", "");
+        return (isNegative ? "-" : "") + "₹" + absVal;
+      };
 
-          const isNegative = str.startsWith("-");
-          const absVal = str.replace("-", "");
-          return (isNegative ? "-" : "") + "₹" + absVal;
-        };
+      const cleanNum = (val) => {
+        if (!val && val !== 0) return 0;
+        return parseFloat(String(val).replace(/[₹,%\s]/g, "")) || 0;
+      };
 
-        return {
-          id: service.id,
-          title: edit.title,
-          price: edit.price,
-          discount_percent: edit.discount_percent,
-          admin_amount: formatWithRupee(edit.admin_amount),
-          staff_amount: formatWithRupee(edit.staff_amount),
-        };
-      }).filter(Boolean);
+      // Filter only modified services to avoid unnecessary writes
+      const modifiedServices = pricingServices
+        .map((service) => {
+          const edit = pricingEdits[service.id];
+          if (!edit) return null;
 
-      if (payload.length === 0) return;
+          const titleChanged = String(edit.title || "").trim() !== String(service.title || "").trim();
+          const priceChanged = cleanNum(edit.price) !== cleanNum(service.price);
+          const discountChanged = cleanNum(edit.discount_percent) !== cleanNum(service.discount_percent);
+          const staffChanged = cleanNum(edit.staff_amount) !== cleanNum(service.staff_amount);
+          const adminChanged = cleanNum(edit.admin_amount) !== cleanNum(service.admin_amount);
 
-      // Update each service individually to avoid constraint errors with upsert
-      const updatePromises = payload.map(row =>
-        supabase
-          .from("services")
-          .update({
-            title: row.title,
-            price: row.price,
-            discount_percent: String(row.discount_percent || "0").replace("%", ""),
-            admin_amount: row.admin_amount,
-            staff_amount: row.staff_amount
-          })
-          .eq("id", row.id)
-      );
+          const isModified = titleChanged || priceChanged || discountChanged || staffChanged || adminChanged;
+          if (!isModified) return null;
 
-      const results = await Promise.all(updatePromises);
-      const firstError = results.find(r => r.error)?.error;
+          const rawDiscount = String(edit.discount_percent ?? "0").replace("%", "").trim();
+          const discountVal = parseFloat(rawDiscount) || 0;
 
-      if (firstError) throw firstError;
+          return {
+            id: service.id,
+            title: String(edit.title || "").trim(),
+            price: formatWithRupee(edit.price),
+            discount_percent: discountVal,
+            admin_amount: formatWithRupee(edit.admin_amount),
+            staff_amount: formatWithRupee(edit.staff_amount),
+          };
+        })
+        .filter(Boolean);
 
-      localStorage.removeItem("pricingEditsDraft");
-      setPricingEdits({});
-      triggerAlert("All pricing changes updated successfully! ✅", "Success", "success");
-      await fetchPricingServices(true);
+      if (modifiedServices.length === 0) {
+        triggerAlert("No pricing changes detected to save.", "Info", "info");
+        return;
+      }
+
+      const response = await pricingApi.batchUpdateServicesPricing(modifiedServices);
+
+      // Handle response and partial batch failures
+      const hasErrors = Array.isArray(response?.errors) && response.errors.length > 0;
+      const isFullSuccess = response?.status === "success" && !hasErrors;
+
+      if (isFullSuccess) {
+        localStorage.removeItem("pricingEditsDraft");
+        setPricingEdits({});
+        triggerAlert("All pricing changes updated successfully! ✅", "Success", "success");
+        await fetchPricingServices(true);
+      } else if (response?.status === "partial_success" || hasErrors) {
+        // Partial batch failure handling:
+        // Retain only failed edits in state and draft storage so admin can review and fix
+        const failedServiceIds = new Set(
+          (response.errors || []).map((err) => err.service_id).filter(Boolean)
+        );
+
+        setPricingEdits((prev) => {
+          const remainingEdits = {};
+          Object.keys(prev).forEach((id) => {
+            if (failedServiceIds.has(id)) {
+              remainingEdits[id] = prev[id];
+            }
+          });
+          if (Object.keys(remainingEdits).length > 0) {
+            localStorage.setItem("pricingEditsDraft", JSON.stringify(remainingEdits));
+          } else {
+            localStorage.removeItem("pricingEditsDraft");
+          }
+          return remainingEdits;
+        });
+
+        const errorSummaries = (response.errors || [])
+          .map((e) => (e.service_id ? `[${e.service_id.slice(0, 8)}: ${e.error}]` : e.error))
+          .join(", ");
+
+        triggerAlert(
+          `Partially saved: ${response.updated_count || 0} of ${response.total_requested || modifiedServices.length} succeeded. Failed: ${errorSummaries}`,
+          "Partial Save Warning",
+          "error"
+        );
+
+        // Safely refresh confirmed server state for successful items
+        await fetchPricingServices(true);
+      } else {
+        throw new Error(response?.message || "Failed to save pricing changes.");
+      }
     } catch (err) {
       console.error("Save All Pricing Error:", err);
-      triggerAlert(err.message, "Save All Error", "error");
+      triggerAlert(err.message || "Failed to save pricing changes.", "Save All Error", "error");
+      // Edits are preserved in pricingEdits and localStorage.pricingEditsDraft
     } finally {
       setLoadingAllPricing(false);
     }
   };
 
   // ================== PARTNER PAYMENTS HELPERS ==================
+  // eslint-disable-next-line no-unused-vars
   const formatPayoutDate = (date) => {
     const d = new Date(date);
     return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
   };
 
+  // eslint-disable-next-line no-unused-vars
   const getDayName = (date) => {
     return new Date(date).toLocaleDateString("en-IN", { weekday: "long" });
   };
 
+  // eslint-disable-next-line no-unused-vars
   const getCurrentCycleRange = () => {
     const now = new Date();
     const currentDay = now.getDay(); // 0 is Sunday, 1 is Monday...
@@ -2294,29 +2320,23 @@ function Dashboard() {
         setPayoutBreakdown([]);
       }
 
-      let startDate, endDate, cycleLabel;
+      let cycleInfo = { start: "", end: "", label: "" };
 
       if (payoutDateMode === "auto" && !customStart) {
-        const range = getCurrentCycleRange();
-        startDate = range.start;
-        endDate = range.end;
-        cycleLabel = range.label;
+        const currentCycle = await partnerPayoutsApi.getCurrentCycle();
+        cycleInfo = {
+          start: currentCycle.start,
+          end: currentCycle.end,
+          label: currentCycle.label,
+        };
       } else {
-        startDate = new Date(customStart || payoutCustomRange.start);
-        endDate = new Date(customEnd || payoutCustomRange.end);
+        const sStr = customStart || payoutCustomRange.start;
+        const eStr = customEnd || payoutCustomRange.end;
+        const validated = await partnerPayoutsApi.validateCycleDates(sStr, eStr);
 
-        // VALIDATION: Only allow Sun-Wed or Thu-Sat cycles
-        const startDay = startDate.getDay();
-        const endDay = endDate.getDay();
-        const diffMs = endDate - startDate;
-        const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
-
-        const isSunToWed = (startDay === 0 && endDay === 3 && diffDays === 3);
-        const isThuToSat = (startDay === 4 && endDay === 6 && diffDays === 2);
-
-        if (!isSunToWed && !isThuToSat) {
+        if (!validated.is_valid) {
           triggerAlert(
-            "Please select a valid cycle: Sunday to Wednesday or Thursday to Saturday.",
+            validated.message || "Please select a valid cycle: Sunday to Wednesday or Thursday to Saturday.",
             "Invalid Date Range",
             "warning"
           );
@@ -2324,241 +2344,60 @@ function Dashboard() {
           return;
         }
 
-        cycleLabel = `${getDayName(startDate)} to ${getDayName(endDate)}`;
+        cycleInfo = {
+          start: validated.start,
+          end: validated.end,
+          label: validated.cycle_label,
+        };
       }
 
-      // Set time to absolute start and end
-      startDate.setHours(0, 0, 0, 0);
-      endDate.setHours(23, 59, 59, 999);
+      setPayoutCycleInfo(cycleInfo);
 
-      setPayoutCycleInfo({
-        start: formatPayoutDate(startDate),
-        end: formatPayoutDate(endDate),
-        label: cycleLabel
-      });
-
-      // 1. Fetch all staff profiles
-      const { data: staffData } = await supabase
-        .from("staff_profile")
-        .select("*");
-
-      // 2. Fetch ALL earnings for all staff (to calculate Weekly, Monthly, and Total stats)
-      const { data: allEarnings, error: earnError } = await supabase
-        .from("staff_earnings")
-        .select("staff_email, AMOUNT, payment_status, earned_at, paid_at");
-
-      if (earnError) throw earnError;
-
-      // Group and calculate stats per staff
-      const statsMap = {};
-      const now = new Date();
-      // REAL-TIME KEYS (Independent of filters for the top summary table)
-
-      // Keep filter variables for other cycle calculations
-      const [fYear, fMonth] = payoutFilterMonth.split("-").map(Number);
-
-      // Calculate accurate current week number based on Monday-Sunday calendar
-      const tempFirst = new Date(fYear, fMonth - 1, 1);
-      const tempMon = new Date(tempFirst);
-      const dayOfFirst = tempMon.getDay();
-      const adj = dayOfFirst === 0 ? 6 : dayOfFirst - 1;
-      tempMon.setDate(tempMon.getDate() - adj);
-      tempMon.setHours(0, 0, 0, 0);
-
-      // If viewing the current month, use Today's date for 'current' week, otherwise use the first of the month
-      const todayYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-      const referenceDate = (payoutFilterMonth === todayYM) ? now : new Date(fYear, fMonth - 1, 1);
-      referenceDate.setHours(0, 0, 0, 0);
-
-      // If a specific week is selected in the UI, use that for the "Weekly" column. 
-      // Otherwise, use the calculated week based on the reference date.
-
-      allEarnings?.forEach(e => {
-        const email = e.staff_email?.trim()?.toLowerCase();
-        if (!email) return;
-
-        if (!statsMap[email]) {
-          statsMap[email] = { pending: 0, weekly: 0, monthly: 0, total: 0, count: 0, all_time: 0 };
-        }
-
-        const amt = parseFloat(e.AMOUNT || e.amount || 0);
-        const status = (e.payment_status || "pending").toLowerCase();
-
-        // 1. Accumulate All-Time and Pending stats
-        statsMap[email].all_time += amt;
-        if (status === "pending") {
-          statsMap[email].pending += amt;
-        }
-
-        // 2. Performance Stats (Total Paid and Avg/Job)
-        if (status === "paid") {
-          statsMap[email].total += amt;
-          statsMap[email].count += 1;
-        }
-
-        // 3. Period Earnings (Weekly/Monthly) - Based on EARNED_AT for all records (Pending + Paid)
-        if (e.earned_at) {
-          const d = new Date(e.earned_at);
-
-          // Item week calculation (Monday-Sunday start)
-          const itemFirstOfMonth = new Date(d.getFullYear(), d.getMonth(), 1);
-          const itemFirstMon = new Date(itemFirstOfMonth);
-          const itemDayOfFirst = itemFirstMon.getDay();
-          const itemAdj = itemDayOfFirst === 0 ? 6 : itemDayOfFirst - 1;
-          itemFirstMon.setDate(itemFirstMon.getDate() - itemAdj);
-          itemFirstMon.setHours(0, 0, 0, 0);
-
-          // Sum of all PAID amounts across all time (Independent of calendar)
-          if (status === "paid") {
-            statsMap[email].monthly += amt;
-            statsMap[email].weekly += amt;
-          }
-        }
-      });
-
-      const formattedStaff = (staffData || []).map(s => {
-        const email = s.email?.trim()?.toLowerCase();
-        const stats = statsMap[email] || { pending: 0, weekly: 0, monthly: 0, total: 0, count: 0 };
-        return {
-          ...s,
-          cycleAmount: stats.pending,
-          weeklyEarning: stats.weekly,
-          monthlyEarning: stats.monthly,
-          totalEarning: stats.total,
-          allTimeEarning: stats.all_time,
-          avgEarning: stats.count > 0 ? Math.round(stats.total / stats.count) : 0
-        };
-      }).sort((a, b) => b.cycleAmount - a.cycleAmount);
-
+      // 1. Fetch all partner payout profiles and live aggregated earnings from FastAPI
+      const formattedStaff = await partnerPayoutsApi.getPartnersPayouts();
       setPayoutStaffList(formattedStaff);
 
-      // 3. fetch breakdown if a specific staff was selected
+      // Populate cancellation deductions map for display
+      const cancelMap = {};
+      formattedStaff.forEach(s => {
+        if (s.email) {
+          cancelMap[s.email.trim().toLowerCase()] = s.cancellationDeductions || 0;
+        }
+      });
+      setStaffCancellationsMap(cancelMap);
+
+      // 2. Fetch breakdown if a specific staff was selected
       if (staffToSelect) {
-        const emailToSearch = staffToSelect.email?.trim()?.toLowerCase();
-        // Fetch pending earnings - filter by earned_at in Custom Range mode, show all in Active Cycle mode
-        let breakdownQuery = supabase
-          .from("staff_earnings")
-          .select("*")
-          .ilike("staff_email", emailToSearch);
-
-        // Always fetch both paid and pending for the detail view calculation
-        // The Show History toggle only affects the main page's bottom table
-        if (!payoutShowHistory && !staffToSelect) {
-          breakdownQuery = breakdownQuery.or("payment_status.eq.pending,payment_status.is.null");
-        }
-
-        // Fetch full history for the detail view breakdown (Independent of main filter)
-        // No date range applied here to ensure lifetime summaries are accurate in the detail view panels
-
-        const { data: rawEarnings, error: earnErrorBreakdown } = await breakdownQuery
-          .order("earned_at", { ascending: false });
-
-        if (earnErrorBreakdown) throw earnErrorBreakdown;
-
-        let enrichedBreakdown = rawEarnings || [];
-
-        // Robust Fetch for Booking Info
-        const bookingIds = enrichedBreakdown.map(e => e.booking_id).filter(Boolean);
-        if (bookingIds.length > 0) {
-          const { data: bookingData } = await supabase
-            .from("bookings")
-            .select("id, booking_id, services, booking_date")
-            .or(`id.in.(${bookingIds.join(',')}),booking_id.in.(${bookingIds.join(',')})`);
-
-          if (bookingData && bookingData.length > 0) {
-            const bookingMap = {};
-            bookingData.forEach(b => {
-              let title = "Service";
-              if (Array.isArray(b.services) && b.services.length > 0) {
-                title = b.services[0].title || "Service";
-              }
-
-              const info = { title, date: b.booking_date };
-              if (b.id) bookingMap[b.id] = info;
-              if (b.booking_id) bookingMap[b.booking_id] = info;
-            });
-
-            enrichedBreakdown = enrichedBreakdown.map(e => {
-              const bInfo = bookingMap[e.booking_id];
-              return {
-                ...e,
-                service_title: bInfo?.title || "Service",
-                display_date: bInfo?.date || e.earned_at
-              };
-            });
-          } else {
-            enrichedBreakdown = enrichedBreakdown.map(e => ({
-              ...e,
-              service_title: "Service",
-              display_date: e.earned_at
-            }));
-          }
-        } else {
-          enrichedBreakdown = enrichedBreakdown.map(e => ({
-            ...e,
-            service_title: "Adjustment/Manual",
-            display_date: e.earned_at
-          }));
-        }
-
+        const partnerIdentifier = staffToSelect.id || staffToSelect.email?.trim()?.toLowerCase();
+        const enrichedBreakdown = await partnerPayoutsApi.getPartnerEarningsBreakdown(partnerIdentifier);
         setPayoutBreakdown(enrichedBreakdown);
 
-        // Calculate the NET PAYABLE from the filtered breakdown so the card matches
-        const filteredTotal = enrichedBreakdown.reduce((sum, e) => sum + parseFloat(e.AMOUNT || e.amount || 0), 0);
-        const matchedStaff = formattedStaff.find(s => s.email?.trim()?.toLowerCase() === emailToSearch) || staffToSelect;
+        const filteredTotal = enrichedBreakdown.reduce(
+          (sum, e) => sum + parseFloat(e.amount || e.AMOUNT || 0),
+          0
+        );
+        const emailToSearch = staffToSelect.email?.trim()?.toLowerCase();
+        const matchedStaff =
+          formattedStaff.find((s) => s.email?.trim()?.toLowerCase() === emailToSearch) || staffToSelect;
         setSelectedPayoutStaff({ ...matchedStaff, cycleAmount: filteredTotal });
       }
 
-      // 4. Fetch Recent Payout Activity
-      let recentQuery = supabase
-        .from("staff_earnings")
-        .select("*")
-        .eq("payment_status", "paid")
-        .order("paid_at", { ascending: false });
-
-      // FIX: If a staff member is selected, fetch THEIR recent payouts, not global latest 10
+      // 3. Fetch Recent Payout Activity from FastAPI
+      const recentParams = {
+        limit: recentPayoutFilterTime ? 100 : 10,
+      };
       if (staffToSelect) {
-        recentQuery = recentQuery.ilike("staff_email", staffToSelect.email?.trim()?.toLowerCase());
+        recentParams.staff_email = staffToSelect.email?.trim()?.toLowerCase();
       }
-
       if (recentPayoutFilterDate) {
-        recentQuery = recentQuery
-          .gte("paid_at", `${recentPayoutFilterDate}T00:00:00`)
-          .lte("paid_at", `${recentPayoutFilterDate}T23:59:59`);
+        recentParams.date = recentPayoutFilterDate;
       }
-
-      const { data: recentData, error: recentError } = await recentQuery.limit(recentPayoutFilterTime ? 100 : 10);
-
-      if (recentError) {
-        console.error("Recent Payouts Fetch Error:", recentError);
-      }
-
-      let enrichedRecent = recentData || [];
-      if (staffData && staffData.length > 0) {
-        const staffMap = {};
-        staffData.forEach(s => {
-          if (s.email) staffMap[s.email.trim().toLowerCase()] = s.name;
-        });
-        enrichedRecent = enrichedRecent.map(r => ({
-          ...r,
-          staff_name: staffMap[r.staff_email?.trim()?.toLowerCase()] || r.staff_name || "Partner"
-        }));
-      }
-
       if (recentPayoutFilterTime) {
-        enrichedRecent = enrichedRecent.filter(r => {
-          if (!r.paid_at) return false;
-          const d = new Date(r.paid_at);
-          const h = d.getHours();
-          const m = d.getMinutes();
-          const merid = h >= 12 ? "pm" : "am";
-          const h12 = h % 12 || 12;
-          const timeStr = `${h12}:${String(m).padStart(2, '0')} ${merid}`;
-          return timeStr.toLowerCase() === recentPayoutFilterTime.toLowerCase();
-        });
+        recentParams.time = recentPayoutFilterTime;
       }
 
-      setRecentPayouts(enrichedRecent.slice(0, 10));
+      const recentData = await partnerPayoutsApi.getRecentPayouts(recentParams);
+      setRecentPayouts(recentData.slice(0, 10));
       setPayoutLoading(false);
     } catch (err) {
       console.error("Partner Payout Fetch Error:", err);
@@ -2620,21 +2459,16 @@ function Dashboard() {
       const productCode = settingsMap["product_code"] || "";
       const payoutRemark = settingsMap["payout_remark"] || "Salary De Jan";
 
-      // Fetch bank details for these staff
-      const emails = [...new Set(filteredData.map(item => item.staff_email?.trim()?.toLowerCase()).filter(Boolean))];
-      const { data: profiles } = await supabase
-        .from("staff_profile")
-        .select("email, BNF_NAME, BENE_ACC_NO, BENE_IFSC, bank_name")
-        .in("email", emails);
-
+      // Fetch bank details for partners via FastAPI
+      const partnersList = await partnerPayoutsApi.getPartnersPayouts();
       const profileMap = {};
-      profiles?.forEach(p => {
+      partnersList?.forEach(p => {
         if (p.email) {
           profileMap[p.email.trim().toLowerCase()] = {
             email: p.email,
-            account_holder_name: p.BNF_NAME || "N/A",
-            account_number: p.BENE_ACC_NO || "N/A",
-            ifsc_code: p.BENE_IFSC || "N/A",
+            account_holder_name: p.bnf_name || p.BNF_NAME || "N/A",
+            account_number: p.bene_acc_no || p.BENE_ACC_NO || "N/A",
+            ifsc_code: p.bene_ifsc || p.BENE_IFSC || "N/A",
             bank_name: p.bank_name || "N/A"
           };
         }
@@ -2782,83 +2616,18 @@ function Dashboard() {
   };
 
   const handleExportReferralPayoutsExcel = async () => {
-    const eligibleReferrals = (staffReferrals || []).filter(
-      item =>
-        item.status === "approved" &&
-        (item.completed_booking !== null && item.completed_booking !== undefined ? item.completed_booking : 0) >= 30 &&
-        item.bonus_status !== "paid"
-    );
-
-    if (!eligibleReferrals || eligibleReferrals.length === 0) {
-      triggerAlert("No eligible referral rewards (with 30+ completed bookings) available to export.", "Export Failed", "warning");
-      return;
-    }
-
     try {
-      // Fetch secure settings from admin_settings table in Supabase
-      const { data: settingsData, error: settingsError } = await supabase
-        .from("admin_settings")
-        .select("key, value");
+      const exportRes = await staffReferralsApi.getExportData();
+      const rows = exportRes.rows || exportRes.records || [];
+      const settings = exportRes.export_settings || {};
+      const debitAccountNo = settings.debit_account_no || exportRes.debit_account_no || "";
+      const payoutMode = settings.payout_mode || exportRes.payout_mode || "FT";
+      const productCode = settings.product_code || exportRes.product_code || "PAB_VENDOR";
 
-      if (settingsError) {
-        console.error("Error fetching settings:", settingsError);
-        triggerAlert("Failed to retrieve secure export settings from Supabase.", "Export Error", "error");
+      if (!rows || rows.length === 0) {
+        triggerAlert("No eligible referral rewards (with 30+ completed bookings) available to export.", "Export Failed", "warning");
         return;
       }
-
-      const settingsMap = {};
-      settingsData?.forEach(item => {
-        settingsMap[item.key] = item.value;
-      });
-
-      const debitAccountNo = settingsMap["debit_account_no"] || "";
-      const payoutMode = settingsMap["payout_mode"] || "";
-      const productCode = settingsMap["product_code"] || "";
-
-      // Fetch bank details for these referrers
-      const referralCodes = [...new Set(eligibleReferrals.map(item => item.referral_code).filter(Boolean))];
-      const { data: profiles } = await supabase
-        .from("staff_profile")
-        .select("email, referral_code, BNF_NAME, BENE_ACC_NO, BENE_IFSC, bank_name")
-        .in("referral_code", referralCodes);
-
-      const profileMap = {};
-      profiles?.forEach(p => {
-        if (p.referral_code) {
-          profileMap[p.referral_code.trim().toUpperCase()] = {
-            email: p.email,
-            account_holder_name: p.BNF_NAME || "N/A",
-            account_number: p.BENE_ACC_NO || "N/A",
-            ifsc_code: p.BENE_IFSC || "N/A",
-            bank_name: p.bank_name || "N/A"
-          };
-        }
-      });
-
-      // Group referrals by referrer code to aggregate payments
-      const groupedDataMap = eligibleReferrals.reduce((acc, item) => {
-        const codeKey = item.referral_code?.trim()?.toUpperCase() || "unknown";
-        if (!acc[codeKey]) {
-          const profile = profileMap[codeKey] || {};
-          acc[codeKey] = {
-            name: item.referred_name || "Referrer",
-            code: item.referral_code || "",
-            referralCount: 0,
-            totalAmount: 0,
-            allIds: [],
-            account_holder_name: profile.account_holder_name || "N/A",
-            account_number: profile.account_number || "N/A",
-            ifsc_code: profile.ifsc_code || "N/A",
-            bank_name: profile.bank_name || "N/A"
-          };
-        }
-        acc[codeKey].referralCount += 1;
-        acc[codeKey].totalAmount += 1500; // 1500 per referral
-        acc[codeKey].allIds.push(item.id);
-        return acc;
-      }, {});
-
-      const displayData = Object.values(groupedDataMap);
 
       const ExcelJS = await loadExcelJS();
       const workbook = new ExcelJS.Workbook();
@@ -2919,20 +2688,22 @@ function Dashboard() {
       });
 
       // 2. Add actual data rows starting at Row 2
-      displayData.forEach(item => {
-        // Use the referrer name (cleaned of special characters) in the REMARK field
-        // so that you can identify who the payment belongs to since BNF_NAME might be blank,
-        // while remaining 100% bank-safe.
-        const remarkString = (item.name || "Referral Reward").replace(/[^a-zA-Z0-9 ]/g, "");
+      rows.forEach(item => {
+        const nameVal = item.referrer_name || item.name || item.candidate_name || "Referral Reward";
+        const remarkString = nameVal.replace(/[^a-zA-Z0-9 ]/g, "");
+        const bnfName = item.account_holder_name || item.beneficiary_name || item.BNF_NAME || "N/A";
+        const accNo = item.account_number || item.BENE_ACC_NO || "N/A";
+        const ifsc = item.ifsc_code || item.BENE_IFSC || "N/A";
+        const amount = item.total_amount ?? item.totalAmount ?? item.bonus_amount ?? 0;
 
         const dataRow = worksheet.addRow([
           productCode,
           payoutMode,
           debitAccountNo,
-          item.account_holder_name,
-          item.account_number,
-          item.ifsc_code,
-          item.totalAmount,
+          bnfName,
+          accNo,
+          ifsc,
+          amount,
           todayFormatted,
           remarkString
         ]);
@@ -2966,7 +2737,7 @@ function Dashboard() {
       anchor.click();
       window.URL.revokeObjectURL(url);
 
-      triggerAlert(`Successfully exported ${displayData.length} referral payments to Excel.`, "Export Successful", "success");
+      triggerAlert(`Successfully exported ${rows.length} referral payments to Excel.`, "Export Successful", "success");
     } catch (err) {
       console.error("Referral Excel Export Error:", err);
       triggerAlert("Failed to generate Excel file.", "Export Error", "error");
@@ -2999,12 +2770,12 @@ function Dashboard() {
           if (!data || data.length === 0) {
             triggerAlert("The Excel file seems to be empty.", "Sync Failed", "warning");
             setReferralProcessing(false);
+            if (e.target) e.target.value = "";
             return;
           }
 
           let allPaidIds = [];
           const paidAccountNumbers = [];
-          const excelAmounts = {};
 
           data.forEach(row => {
             const statusKey = Object.keys(row).find(k => {
@@ -3014,10 +2785,6 @@ function Dashboard() {
             const accKey = Object.keys(row).find(k => {
               const firstLine = k.split('\n')[0].trim().toLowerCase();
               return firstLine.includes("bene_acc_no") || firstLine.includes("account number");
-            });
-            const amtKey = Object.keys(row).find(k => {
-              const firstLine = k.split('\n')[0].trim().toLowerCase();
-              return firstLine.includes("amount");
             });
 
             const statusVal = row[statusKey]?.toString()?.trim()?.toUpperCase();
@@ -3031,186 +2798,47 @@ function Dashboard() {
               } else if (row[accKey]) {
                 const accNo = row[accKey].toString().trim();
                 paidAccountNumbers.push(accNo);
-                if (amtKey) {
-                  excelAmounts[accNo] = parseFloat(row[amtKey]) || 0;
-                }
               }
             }
           });
 
-          // Fallback check by account numbers if no explicit IDs were parsed from remark
-          if (paidAccountNumbers.length > 0) {
-            const { data: profiles } = await supabase
-              .from("staff_profile")
-              .select("email, referral_code, BENE_ACC_NO")
-              .in("BENE_ACC_NO", paidAccountNumbers);
-
-            if (profiles && profiles.length > 0) {
-              const codes = profiles.map(p => p.referral_code?.trim()).filter(Boolean);
-
-              // Query pending/initiated referral forms for these referrers
-              const { data: pendingReferrals } = await supabase
-                .from("staff_referral_forms")
-                .select("id")
-                .in("referral_code", codes)
-                .neq("bonus_status", "paid");
-
-              if (pendingReferrals && pendingReferrals.length > 0) {
-                const ids = pendingReferrals.map(e => e.id);
-                allPaidIds = [...allPaidIds, ...ids];
-              }
-            }
-          }
-
-          if (allPaidIds.length === 0) {
+          if (allPaidIds.length === 0 && paidAccountNumbers.length === 0) {
             triggerAlert("No rows marked as 'PAID' were detected in the Excel sheet.", "No Changes Found", "info");
             setReferralProcessing(false);
+            if (e.target) e.target.value = "";
             return;
           }
 
-          // Fetch current unpaid records for these IDs
-          const { data: currentPending, error: fetchErr } = await supabase
-            .from("staff_referral_forms")
-            .select("*")
-            .in("id", allPaidIds)
-            .neq("bonus_status", "paid");
-
-          if (fetchErr) throw fetchErr;
-
-          if (!currentPending || currentPending.length === 0) {
-            triggerAlert("The records you marked as 'PAID' are already updated in the database.", "Already Synced", "info");
-            setReferralProcessing(false);
-            return;
-          }
-
-          const totalToPay = currentPending.length * 1500;
-          setConfirmConfig({
-            show: true,
-            title: "Confirm Referral Sync",
-            message: `Updating ${currentPending.length} referral bonuses to 'PAID' for a total of ₹${totalToPay.toLocaleString()}. Proceed?`,
-            onConfirm: async () => {
-              try {
-                const idsToUpdate = currentPending.map(r => r.id);
-
-                // 1. Update referral forms
-                const { error: updateErr } = await supabase
-                  .from("staff_referral_forms")
-                  .update({ bonus_status: "paid", bonus_amount: 1500 })
-                  .in("id", idsToUpdate);
-
-                if (updateErr) throw updateErr;
-
-                // Group completed payments by referrer code to update their staff profiles
-                const referrerGroups = {};
-                currentPending.forEach(r => {
-                  const code = r.referral_code?.trim();
-                  if (!code) return;
-                  if (!referrerGroups[code]) referrerGroups[code] = { amount: 0, items: [] };
-                  referrerGroups[code].amount += 1500;
-                  referrerGroups[code].items.push(r);
-                });
-
-                for (const [code, group] of Object.entries(referrerGroups)) {
-                  const { data: profile } = await supabase.from("staff_profile").select("*").eq("referral_code", code).maybeSingle();
-                  if (profile) {
-                    const email = profile.email;
-                    let totalJson = {}; try { totalJson = typeof profile.total_earnings_json === 'string' ? JSON.parse(profile.total_earnings_json) : (profile.total_earnings_json || {}); } catch (e) { }
-                    let monthlyJson = {}; try { monthlyJson = typeof profile.monthly_earnings_json === 'string' ? JSON.parse(profile.monthly_earnings_json) : (profile.monthly_earnings_json || {}); } catch (e) { }
-                    let weeklyJson = {}; try { weeklyJson = typeof profile.weekly_earnings_json === 'string' ? JSON.parse(profile.weekly_earnings_json) : (profile.weekly_earnings_json || {}); } catch (e) { }
-
-                    group.items.forEach(() => {
-                      const amt = 1500;
-                      const d = new Date();
-                      const dateStr = formatDateLocal(d);
-                      if (!dateStr || dateStr === "Invalid Date") return;
-
-                      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-
-                      // Accurate Week Calculation (Monday-start)
-                      const itemFirstOfMonth = new Date(d.getFullYear(), d.getMonth(), 1);
-                      const itemFirstMon = new Date(itemFirstOfMonth);
-                      const itemDayOfFirst = itemFirstMon.getDay(); // 0=Sun, 1=Mon...
-                      const diff = (itemDayOfFirst === 0 ? -6 : 1 - itemDayOfFirst);
-                      itemFirstMon.setDate(itemFirstMon.getDate() + diff);
-                      itemFirstMon.setHours(0, 0, 0, 0);
-
-                      const itemDiff = Math.floor((d - itemFirstMon) / (1000 * 60 * 60 * 24));
-                      const weekKey = `week_${Math.floor(itemDiff / 7) + 1}`;
-
-                      totalJson[dateStr] = (parseFloat(totalJson[dateStr] || 0) + amt);
-                      monthlyJson[monthKey] = (parseFloat(monthlyJson[monthKey] || 0) + amt);
-                      if (!weeklyJson[monthKey]) weeklyJson[monthKey] = {};
-                      weeklyJson[monthKey][weekKey] = (parseFloat(weeklyJson[monthKey][weekKey] || 0) + amt);
-                    });
-
-                    await supabase.from("staff_profile").update({
-                      total_earnings: (parseFloat(profile.total_earnings || 0) + group.amount),
-                      total_earnings_json: JSON.stringify(totalJson),
-                      monthly_earnings_json: JSON.stringify(monthlyJson),
-                      weekly_earnings_json: JSON.stringify(weeklyJson)
-                    }).eq("email", email);
-
-                    // Save notification in DB
-                    await supabase
-                      .from("notifications")
-                      .insert({
-                        staff_email: email,
-                        title: "Referral Reward Received! 💰",
-                        body: `Congratulations! You have received ₹${group.amount.toLocaleString()} as your referral bonus payment.`,
-                        type: "payout_received",
-                        is_read: false,
-                        booking_id: null
-                      });
-
-                    if (profile.push_token) {
-                      await supabase.functions.invoke("send-staff-notification", {
-                        body: {
-                          token: profile.push_token,
-                          title: "Referral Reward Received! 💰",
-                          body: `Congratulations! You have received ₹${group.amount.toLocaleString()} as your referral bonus payment. For queries, contact ${SUPPORT_PHONE}`,
-                          data: { screen: "new-services", type: "payout_received", amount: group.amount }
-                        }
-                      });
-                    }
-
-                    // Fire WhatsApp notification for each referral item in the group
-                    if (profile.phone) {
-                      group.items.forEach(item => {
-                        supabase.functions.invoke("send-referral-reward", {
-                          body: {
-                            staff_name: profile.name || "Partner",
-                            referred_person_name: item.full_name || "your referral",
-                            amount: "1500",
-                            phone: profile.phone
-                          }
-                        }).catch(err => console.error("Error sending referral reward WhatsApp:", err));
-                      });
-                    }
-                  }
-                }
-
-                triggerAlert(`Successfully synced ${currentPending.length} records from Excel.`, "Sync Successful", "success");
-                fetchStaffReferrals();
-              } catch (err) {
-                console.error("Referral Sync Processing Error:", err);
-                triggerAlert(`Error updating records: ${err.message}`, "Sync Failed", "error");
-              } finally {
-                setReferralProcessing(false);
-              }
-            },
-            onCancel: () => setReferralProcessing(false)
+          // Non-destructive preview mode via FastAPI backend (Strict financial mutation guard)
+          const previewRes = await staffReferralsApi.previewReferralSync({
+            referral_ids: allPaidIds.length > 0 ? allPaidIds : undefined,
+            bank_account_numbers: paidAccountNumbers.length > 0 ? paidAccountNumbers : undefined,
+            confirm_financial_mutation: false,
           });
+
+          const totalRecs = previewRes.total_records || 0;
+          const totalAmt = previewRes.total_amount || 0;
+
+          triggerAlert(
+            previewRes.message || `Reconciliation Preview: Found ${totalRecs} pending referral records totaling ₹${totalAmt.toLocaleString()}. Actual financial mutations are disabled.`,
+            "Reconciliation Preview",
+            "info"
+          );
         } catch (err) {
           console.error("Excel Read Error:", err);
           triggerAlert(`Could not read the Excel file: ${err.message}`, "Error", "error");
+        } finally {
           setReferralProcessing(false);
+          if (e.target) e.target.value = "";
         }
       };
       reader.readAsArrayBuffer(file);
     } catch (err) {
+      console.error("File processing error:", err);
+      triggerAlert("Failed to process file.", "Error", "error");
       setReferralProcessing(false);
+      if (e.target) e.target.value = "";
     }
-    e.target.value = null;
   };
 
   const handleImportPayoutsExcel = async (e) => {
@@ -3245,7 +2873,6 @@ function Dashboard() {
           // Find all individual IDs that are now marked as "PAID"
           let allPaidIds = [];
           const paidAccountNumbers = [];
-          const excelAmounts = {};
 
           data.forEach(row => {
             const statusKey = Object.keys(row).find(k => {
@@ -3260,10 +2887,6 @@ function Dashboard() {
               const firstLine = k.split('\n')[0].trim().toLowerCase();
               return firstLine.includes("bene_acc_no") || firstLine.includes("account number");
             });
-            const amtKey = Object.keys(row).find(k => {
-              const firstLine = k.split('\n')[0].trim().toLowerCase();
-              return firstLine.includes("amount");
-            });
 
             const statusVal = row[statusKey]?.toString()?.trim()?.toUpperCase();
             if (statusVal === "PAID") {
@@ -3273,175 +2896,33 @@ function Dashboard() {
               } else if (row[accKey]) {
                 const accNo = row[accKey].toString().trim();
                 paidAccountNumbers.push(accNo);
-                if (amtKey) {
-                  excelAmounts[accNo] = parseFloat(row[amtKey]) || 0;
-                }
               }
             }
           });
 
-          if (paidAccountNumbers.length > 0) {
-            const { data: profiles } = await supabase
-              .from("staff_profile")
-              .select("email, BENE_ACC_NO")
-              .in("BENE_ACC_NO", paidAccountNumbers);
-
-            if (profiles && profiles.length > 0) {
-              const emails = profiles.map(p => p.email?.trim()?.toLowerCase()).filter(Boolean);
-              const { data: pendingEarnings } = await supabase
-                .from("staff_earnings")
-                .select("id")
-                .in("staff_email", emails)
-                .neq("payment_status", "paid");
-
-              if (pendingEarnings && pendingEarnings.length > 0) {
-                const ids = pendingEarnings.map(e => e.id);
-                allPaidIds = [...allPaidIds, ...ids];
-              }
-            }
-          }
-
-          if (allPaidIds.length === 0) {
+          if (allPaidIds.length === 0 && paidAccountNumbers.length === 0) {
             triggerAlert("No rows marked as 'PAID' were detected. Ensure you typed 'paid' in the REMARK column.", "No Changes Found", "info");
             setPayoutProcessing(false);
             return;
           }
 
-          // Fetch current pending records for these IDs
-          const { data: currentPending, error: fetchErr } = await supabase
-            .from("staff_earnings")
-            .select("*")
-            .in("id", allPaidIds)
-            .neq("payment_status", "paid");
-
-          if (fetchErr) throw fetchErr;
-
-          if (!currentPending || currentPending.length === 0) {
-            triggerAlert("The records you marked as 'PAID' are already updated in the database.", "Already Synced", "info");
-            setPayoutProcessing(false);
-            return;
-          }
-
-          const totalToPay = currentPending.reduce((s, r) => s + parseFloat(r.AMOUNT || r.amount || 0), 0);
-          setConfirmConfig({
-            show: true,
-            title: "Confirm Excel Sync",
-            message: `Updating ${currentPending.length} services to 'PAID' for a total of ₹${totalToPay.toLocaleString()}. Proceed?`,
-            onConfirm: async () => {
-              try {
-                const idsToUpdate = currentPending.map(r => r.id);
-
-                const { error: updateErr } = await supabase
-                  .from("staff_earnings")
-                  .update({ payment_status: "paid", paid_at: new Date().toISOString() })
-                  .in("id", idsToUpdate);
-
-                if (updateErr) throw updateErr;
-
-                const staffGroups = {};
-                currentPending.forEach(r => {
-                  const email = r.staff_email?.trim()?.toLowerCase();
-                  if (!staffGroups[email]) staffGroups[email] = { amount: 0, items: [] };
-                  staffGroups[email].amount += parseFloat(r.AMOUNT || r.amount || 0);
-                  staffGroups[email].items.push(r);
-                });
-
-                for (const [email, group] of Object.entries(staffGroups)) {
-                  const { data: profile } = await supabase.from("staff_profile").select("*").eq("email", email).single();
-                  if (profile) {
-                    let totalJson = {}; try { totalJson = typeof profile.total_earnings_json === 'string' ? JSON.parse(profile.total_earnings_json) : (profile.total_earnings_json || {}); } catch (e) { }
-                    let monthlyJson = {}; try { monthlyJson = typeof profile.monthly_earnings_json === 'string' ? JSON.parse(profile.monthly_earnings_json) : (profile.monthly_earnings_json || {}); } catch (e) { }
-                    let weeklyJson = {}; try { weeklyJson = typeof profile.weekly_earnings_json === 'string' ? JSON.parse(profile.weekly_earnings_json) : (profile.weekly_earnings_json || {}); } catch (e) { }
-                    group.items.forEach(item => {
-                      const amt = parseFloat(item.AMOUNT || item.amount || 0);
-                      const d = new Date(item.earned_at || new Date());
-                      const dateStr = formatDateLocal(d);
-                      if (!dateStr || dateStr === "Invalid Date") return;
-
-                      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-
-                      // Accurate Week Calculation (Monday-start)
-                      const itemFirstOfMonth = new Date(d.getFullYear(), d.getMonth(), 1);
-                      const itemFirstMon = new Date(itemFirstOfMonth);
-                      const itemDayOfFirst = itemFirstMon.getDay(); // 0=Sun, 1=Mon...
-                      const diff = (itemDayOfFirst === 0 ? -6 : 1 - itemDayOfFirst);
-                      itemFirstMon.setDate(itemFirstMon.getDate() + diff);
-                      itemFirstMon.setHours(0, 0, 0, 0);
-
-                      const itemDiff = Math.floor((d - itemFirstMon) / (1000 * 60 * 60 * 24));
-                      const weekKey = `week_${Math.floor(itemDiff / 7) + 1}`;
-
-                      totalJson[dateStr] = (parseFloat(totalJson[dateStr] || 0) + amt);
-                      monthlyJson[monthKey] = (parseFloat(monthlyJson[monthKey] || 0) + amt);
-                      if (!weeklyJson[monthKey]) weeklyJson[monthKey] = {};
-                      weeklyJson[monthKey][weekKey] = (parseFloat(weeklyJson[monthKey][weekKey] || 0) + amt);
-                    });
-
-                    const finalNotificationAmount = excelAmounts[profile.BENE_ACC_NO] ? excelAmounts[profile.BENE_ACC_NO] : group.amount;
-
-                    await supabase.from("staff_profile").update({
-                      total_earnings: (parseFloat(profile.total_earnings || 0) + finalNotificationAmount),
-                      total_earnings_json: JSON.stringify(totalJson),
-                      monthly_earnings_json: JSON.stringify(monthlyJson),
-                      weekly_earnings_json: JSON.stringify(weeklyJson)
-                    }).eq("email", email);
-
-                    // Save notification in DB
-                    await supabase
-                      .from("notifications")
-                      .insert({
-                        staff_email: email,
-                        title: "Payment Received! 💰",
-                        body: `Congratulations! You have received ₹${finalNotificationAmount.toLocaleString()} as your payment.`,
-                        type: "payout_received",
-                        is_read: false,
-                        booking_id: null
-                      });
-
-                    if (profile.push_token) {
-                      await supabase.functions.invoke("send-staff-notification", {
-                        body: {
-                          token: profile.push_token,
-                          title: "Payment Received! 💰",
-                          body: `Congratulations! You have received ₹${finalNotificationAmount.toLocaleString()} as your payment. For queries, contact ${SUPPORT_PHONE}`,
-                          data: { screen: "new-services", type: "payout_received", amount: finalNotificationAmount }
-                        }
-                      });
-                    }
-
-                    // Fire WhatsApp notification
-                    if (profile.phone) {
-                      supabase.functions.invoke("send-partner-payment", {
-                        body: {
-                          staff_name: profile.name || "Partner",
-                          amount: finalNotificationAmount.toString(),
-                          phone: profile.phone,
-                          date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
-                        }
-                      }).catch(err => console.error("Error sending partner payment WhatsApp:", err));
-                    }
-                  }
-                }
-
-                triggerAlert(`Successfully synced ${currentPending.length} records from Excel.`, "Sync Successful", "success");
-                // Update records in-place so they stay visible with updated status
-                setPayoutTableData(prev => prev.map(item =>
-                  idsToUpdate.includes(item.id)
-                    ? { ...item, payment_status: "paid", paid_at: new Date().toISOString() }
-                    : item
-                ));
-              } catch (err) {
-                console.error("Sync Processing Error:", err);
-                triggerAlert(`Error updating records: ${err.message}`, "Sync Failed", "error");
-              } finally {
-                setPayoutProcessing(false);
-              }
-            },
-            onCancel: () => setPayoutProcessing(false)
+          // Task 5: Strictly guarded dry-run preview mode via FastAPI.
+          // Direct Supabase financial mutations and notification triggers are removed.
+          const preview = await partnerPayoutsApi.previewPayoutSync({
+            earnings_ids: allPaidIds.length > 0 ? allPaidIds : null,
+            bank_account_numbers: paidAccountNumbers.length > 0 ? paidAccountNumbers : null,
+            confirm_financial_mutation: false,
           });
+
+          triggerAlert(
+            `Payout reconciliation is in preview mode. Payment updates are not enabled. Found ${preview.records_count || 0} matching pending records totaling ₹${(preview.total_amount || 0).toLocaleString()} across ${preview.affected_partners_count || 0} partners.`,
+            "Reconciliation Preview",
+            "info"
+          );
         } catch (err) {
-          console.error("Excel Read Error:", err);
-          triggerAlert(`Could not read the Excel file: ${err.message}`, "Error", "error");
+          console.error("Excel Read/Preview Error:", err);
+          triggerAlert(`Could not process Excel file: ${err.message}`, "Preview Error", "error");
+        } finally {
           setPayoutProcessing(false);
         }
       };
@@ -3468,134 +2949,53 @@ function Dashboard() {
   const fetchAllStaffEarningsTable = async () => {
     try {
       setPayoutTableLoading(true);
-      const { data: staffData } = await supabase.from("staff_profile").select("id, name, email, weekly_earnings_json");
 
-      // Fetch staff cancellations from public.staff_cancellations table
-      const { data: cancelData } = await supabase.from("staff_cancellations").select("*");
-      const cancelMap = {};
-      cancelData?.forEach(c => {
-        const email = c.staff_email?.trim()?.toLowerCase();
-        if (email) {
-          const fee = parseFloat(c.cancellation_fee ?? c.cancellation_amount ?? c.amount ?? 0);
-          cancelMap[email] = (cancelMap[email] || 0) + fee;
-        }
-      });
-      setStaffCancellationsMap(cancelMap);
+      const params = {
+        month: payoutFilterMonth,
+        limit: 200,
+      };
 
-      let query = supabase.from("staff_earnings").select("*");
-
-      const filters = [];
-      if (payoutStatusFilter.includes("paid")) filters.push("payment_status.eq.paid");
-      if (payoutStatusFilter.includes("pending")) filters.push("payment_status.eq.pending", "payment_status.is.null");
-
-      if (filters.length > 0) {
-        query = query.or(filters.join(","));
+      if (payoutStatusFilter.length === 1) {
+        params.payment_status = payoutStatusFilter[0];
       }
 
-      const { data: earningsData, error } = await query.order("earned_at", { ascending: false });
-      if (error) throw error;
+      const tableData = await partnerPayoutsApi.getPayoutsTableData(params);
 
-      const staffMap = {};
-      staffData?.forEach(s => { staffMap[s.email?.trim()?.toLowerCase()] = s.name; });
+      const enriched = (tableData.items || []).map((e) => ({
+        ...e,
+        amount: parseFloat(e.amount || 0),
+        staff_name_display: e.staff_name || e.staff_name_display || "Unknown",
+        service_title: e.service_title || "Service",
+        booking_date_display: e.display_date || e.booking_date_display || e.earned_at,
+      }));
 
-      const bookingIds = (earningsData || []).map(e => e.booking_id).filter(Boolean);
-      let bookingMap = {};
-      if (bookingIds.length > 0) {
-        const { data: bookingData } = await supabase
-          .from("bookings")
-          .select("id, booking_id, services, booking_date")
-          .or(`id.in.(${bookingIds.join(',')}),booking_id.in.(${bookingIds.join(',')})`);
-        bookingData?.forEach(b => {
-          const title = Array.isArray(b.services) && b.services.length > 0 ? b.services[0].title || "Service" : "Service";
-          const info = { title, date: b.booking_date };
-          if (b.id) bookingMap[b.id] = info;
-          if (b.booking_id) bookingMap[b.booking_id] = info;
-        });
-      }
-
-      const enriched = (earningsData || []).map(e => {
-        const bInfo = bookingMap[e.booking_id];
-        return {
-          ...e,
-          amount: parseFloat(e.AMOUNT || e.amount || 0),
-          staff_name_display: staffMap[e.staff_email?.trim()?.toLowerCase()] || e.staff_name || "Unknown",
-          service_title: bInfo?.title || "Service",
-          booking_date_display: bInfo?.date || e.earned_at
-        };
-      });
       setPayoutTableData(enriched);
       setPayoutSelectedRows(new Set());
 
-      // (Dynamic weeks based on full Monday-to-Sunday calendar weeks)
-      const [currY, currM] = payoutFilterMonth.split("-").map(Number);
-      const firstD = new Date(currY, currM - 1, 1);
-      const lastD = new Date(currY, currM, 0);
-
-      // Find the Monday of the week containing the 1st
-      const firstMon = new Date(firstD);
-      const dayOfFirst = firstMon.getDay(); // 0=Sun, 1=Mon...
-      // If 1st is Sun(0), move back 6 days to prev Mon. If Mon(1), stay. If Tue(2), move back 1 day.
-      const diff = (dayOfFirst === 0 ? -6 : 1 - dayOfFirst);
-      firstMon.setDate(firstMon.getDate() + diff);
-
-      let dynamicWeeks = [];
-      let cWeekStart = new Date(firstMon);
-      let wIdx = 1;
-
-      while (cWeekStart <= lastD) {
-        const cWeekEnd = new Date(cWeekStart);
-        cWeekEnd.setDate(cWeekEnd.getDate() + 6);
-
-        dynamicWeeks.push({
-          id: `week_${wIdx}`,
-          label: `Week ${wIdx}`,
-          rangeLabel: `${cWeekStart.toLocaleString('default', { month: 'short' })} ${cWeekStart.getDate()} – ${cWeekEnd.getDate()}`,
-          start: formatDateLocal(cWeekStart),
-          end: formatDateLocal(cWeekEnd)
-        });
-
-        cWeekStart.setDate(cWeekStart.getDate() + 7);
-        wIdx++;
-      }
-
+      // Use dynamic weeks from backend
+      const dynamicWeeks = tableData.dynamic_weeks && tableData.dynamic_weeks.length > 0
+        ? tableData.dynamic_weeks
+        : [];
       setPayoutAvailableWeeks(dynamicWeeks);
 
-      // For the current month, identify which week is "Today"
       const now = new Date();
       const todayDateStr = formatDateLocal(now);
-      const currentYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const todayWeek = dynamicWeeks.find(
+        (w) => w.start && w.end && todayDateStr >= w.start && todayDateStr <= w.end
+      );
 
-      let todayWeekIdx = null;
-      let checkStart = new Date(firstMon);
-      let checkIdx = 1;
-      while (checkStart <= lastD) {
-        const checkEnd = new Date(checkStart);
-        checkEnd.setDate(checkEnd.getDate() + 6);
-        const sStr = formatDateLocal(checkStart);
-        const eStr = formatDateLocal(checkEnd);
-        if (todayDateStr >= sStr && todayDateStr <= eStr) {
-          todayWeekIdx = checkIdx;
-          break;
-        }
-        checkStart.setDate(checkStart.getDate() + 7);
-        checkIdx++;
+      if (todayWeek) {
+        setPayoutTodayWeek(todayWeek.id);
       }
 
-      if (payoutFilterMonth === currentYM && todayWeekIdx) {
-        const todayId = `week_${todayWeekIdx}`;
-        setPayoutTodayWeek(todayId);
-        setPayoutAvailableWeeks(dynamicWeeks.filter(w => w.id === todayId));
-      } else {
-        setPayoutAvailableWeeks(dynamicWeeks);
-      }
-
-      // Default to current week if available, otherwise first week
-      const defaultWeek = (payoutFilterMonth === currentYM && todayWeekIdx) ? `week_${todayWeekIdx}` : (dynamicWeeks[0]?.id || "");
+      const defaultWeek = todayWeek ? todayWeek.id : (dynamicWeeks[0]?.id || "");
 
       if (!payoutFilterWeek && dynamicWeeks.length > 0) setPayoutFilterWeek(defaultWeek);
-      else if (payoutFilterWeek && !dynamicWeeks.some(w => w.id === payoutFilterWeek)) setPayoutFilterWeek(defaultWeek);
+      else if (payoutFilterWeek && !dynamicWeeks.some((w) => w.id === payoutFilterWeek))
+        setPayoutFilterWeek(defaultWeek);
     } catch (err) {
       console.error("Fetch All Staff Earnings Error:", err);
+      triggerAlert(err.message || "Failed to fetch earnings table.", "Error", "error");
     } finally {
       setPayoutTableLoading(false);
     }
@@ -3877,20 +3277,11 @@ function Dashboard() {
   const fetchStaffReferrals = async () => {
     try {
       setLoadingReferrals(true);
-
-      // Trigger the milestone check edge function to sync completed bookings and send notifications
-      await supabase.functions.invoke("check-referral-milestones").catch(err => {
-        console.error("Error invoking check-referral-milestones:", err);
-      });
-
-      const { data, error } = await supabase
-        .from("staff_referral_forms")
-        .select("*")
-        .order("created_at", { ascending: false });
-      if (error) throw error;
+      const data = await staffReferralsApi.getAllStaffReferrals();
       setStaffReferrals(data || []);
     } catch (err) {
       console.error("Error fetching staff referrals:", err);
+      triggerAlert("Failed to load staff referrals: " + (err.message || "Unknown error"), "Load Error", "error");
     } finally {
       setLoadingReferrals(false);
     }
@@ -3898,15 +3289,8 @@ function Dashboard() {
 
   const handleUpdateReferralStatus = async (id, newStatus) => {
     try {
-      const { data, error } = await supabase
-        .from("staff_referral_forms")
-        .update({ status: newStatus })
-        .eq("id", id)
-        .select();
-
-      if (error) throw error;
-
-      if (!data || data.length === 0) {
+      const res = await staffReferralsApi.updateCandidateStatus(id, newStatus);
+      if (!res || res.status !== "success") {
         triggerAlert("Failed to update status. Please check permissions.", "Error", "error");
         return;
       }
@@ -3915,21 +3299,21 @@ function Dashboard() {
       fetchStaffReferrals();
 
       if (newStatus === "approved") {
-        const candidate = data[0];
+        const candidate = res.referral || (staffReferrals || []).find(r => r.id === id) || {};
         // Clean phone number to 10-digit numeric format matching form validation
         const cleanPhone = (candidate.phone_number || "").replace(/\D/g, "");
         const finalPhone = cleanPhone.length > 10 ? cleanPhone.slice(-10) : cleanPhone;
 
-        // Look up referrer's profile ID based on the referral code
+        // Look up referrer's profile ID based on the referral code via backend API
         let referrerId = null;
         if (candidate.referral_code) {
-          const { data: referrerProfile } = await supabase
-            .from("staff_profile")
-            .select("id")
-            .eq("referral_code", candidate.referral_code)
-            .maybeSingle();
-          if (referrerProfile) {
-            referrerId = referrerProfile.id;
+          try {
+            const histRes = await staffReferralsApi.getStaffReferralHistory(candidate.referral_code);
+            if (histRes?.staff_profile?.id) {
+              referrerId = histRes.staff_profile.id;
+            }
+          } catch (e) {
+            // Optional fallback
           }
         }
 
@@ -3965,70 +3349,37 @@ function Dashboard() {
 
   const handleInitiateBonus = async (id) => {
     try {
-      const { error } = await supabase
-        .from("staff_referral_forms")
-        .update({ bonus_status: "initiated" })
-        .eq("id", id);
+      const res = await staffReferralsApi.initiateReferralBonus(id, {
+        notify_staff: false,
+        dry_run: true,
+      });
 
-      if (error) {
-        if (error.message && error.message.includes("column") && error.message.includes("does not exist")) {
-          throw new Error("The 'bonus_status' column is not found in your Supabase table. Please run this SQL in your Supabase SQL Editor: ALTER TABLE staff_referral_forms ADD COLUMN IF NOT EXISTS bonus_status VARCHAR(50) DEFAULT 'pending';");
-        }
-        throw error;
-      }
-
-      triggerAlert("Referral bonus initiated successfully!", "Success", "success");
-      fetchStaffReferrals();
+      triggerAlert(
+        res?.message || "Referral bonus preview completed. Actual bonus payment updates are currently disabled.",
+        "Bonus Action Preview",
+        "info"
+      );
     } catch (err) {
       console.error("Error initiating referral bonus:", err);
-      triggerAlert(err.message, "Bonus Action Failed", "error");
+      triggerAlert(err.message || "Failed to initiate referral bonus", "Bonus Action Failed", "error");
     }
   };
 
   const handleCompletePayment = async (id) => {
     try {
-      const { error } = await supabase
-        .from("staff_referral_forms")
-        .update({
-          bonus_status: "paid",
-          bonus_amount: 1500
-        })
-        .eq("id", id);
+      const res = await staffReferralsApi.completeReferralPayment(id, {
+        payment_reference: "",
+        dry_run: true,
+      });
 
-      if (error) {
-        if (error.message && error.message.includes("column") && error.message.includes("does not exist")) {
-          throw new Error("The 'bonus_amount' or 'bonus_status' column is not found in your Supabase table. Please run this SQL in your Supabase SQL Editor:\nALTER TABLE staff_referral_forms ADD COLUMN IF NOT EXISTS bonus_status VARCHAR(50) DEFAULT 'pending';\nALTER TABLE staff_referral_forms ADD COLUMN IF NOT EXISTS bonus_amount INT DEFAULT 0;");
-        }
-        throw error;
-      }
-
-      // FIRE WHATSAPP NOTIFICATION
-      const referralRecord = staffReferrals?.find(r => r.id === id);
-      if (referralRecord) {
-        // Find the staff profile using referral_code
-        const { data: staffProfile } = await supabase
-          .from("staff_profile")
-          .select("name, phone")
-          .eq("referral_code", referralRecord.referral_code)
-          .single();
-
-        if (staffProfile && staffProfile.phone) {
-          supabase.functions.invoke("send-referral-reward", {
-            body: {
-              staff_name: staffProfile.name || "Partner",
-              referred_person_name: referralRecord.full_name || "your referral",
-              amount: "1500",
-              phone: staffProfile.phone
-            }
-          }).catch(err => console.error("Error sending referral reward WhatsApp:", err));
-        }
-      }
-
-      triggerAlert("Referral bonus marked as paid successfully!", "Success", "success");
-      fetchStaffReferrals();
+      triggerAlert(
+        res?.message || "Referral payment completion preview completed. Actual bonus payment updates are currently disabled.",
+        "Payment Action Preview",
+        "info"
+      );
     } catch (err) {
       console.error("Error completing payment:", err);
-      triggerAlert(err.message, "Payment Action Failed", "error");
+      triggerAlert(err.message || "Failed to complete payment", "Payment Action Failed", "error");
     }
   };
 
@@ -4042,113 +3393,36 @@ function Dashboard() {
   const fetchHeroImages = async () => {
     try {
       setLoadingHero(true);
-      // Staff App: hero_images table, image_path column
-      const { data: staffData } = await supabase
-        .from("hero_images")
-        .select("id, image_path, priority, is_active")
-        .order("priority", { ascending: true });
-      setHeroStaffImages(staffData || []);
+      // Staff App: FastAPI backend (/api/v1/admin/hero-images)
+      try {
+        const staffData = await heroImagesApi.getHeroImages();
+        setHeroStaffImages(staffData || []);
+      } catch (staffErr) {
+        console.error("Error fetching staff hero images via FastAPI:", staffErr);
+        setHeroStaffImages([]);
+      }
 
-      // Customer Website: web-hero-images table, image_path column
-      const { data: webData } = await supabase
-        .from("web-hero-images")
-        .select("id, image_path, priority, is_active")
-        .order("priority", { ascending: true });
-      setHeroWebImages(webData || []);
+      // Customer Website: FastAPI backend (/api/v1/admin/web-hero-images)
+      try {
+        const webData = await heroImagesApi.getWebHeroImages();
+        setHeroWebImages(webData || []);
+      } catch (webErr) {
+        console.error("Error fetching web hero images via FastAPI:", webErr);
+        setHeroWebImages([]);
+      }
 
-      // Customer App: hero_banners table, image_path column
-      const { data: appData } = await supabase
-        .from("hero_banners")
-        .select("id, image_path, priority, is_active")
-        .order("priority", { ascending: true });
-      setHeroAppImages(appData || []);
+      // Customer App: FastAPI backend (/api/v1/admin/app-hero-images)
+      try {
+        const appData = await heroImagesApi.getAppHeroImages();
+        setHeroAppImages(appData || []);
+      } catch (appErr) {
+        console.error("Error fetching app hero images via FastAPI:", appErr);
+        setHeroAppImages([]);
+      }
     } catch (err) {
       console.error("Error fetching hero images:", err);
     } finally {
       setLoadingHero(false);
-    }
-  };
-
-  /**
-   * Unified Helper for Priority Shifting
-   * mode: "up" (increment >= priority) or "down" (decrement > priority)
-   * Returns true if shifting succeeded, false otherwise.
-   */
-  const shiftHeroPriorities = async (table, targetPriority, mode, excludeId = null) => {
-    const targetP = parseInt(targetPriority) || 1;
-
-    try {
-      // 1. Fetch EVERYTHING from the table for a fresh state
-      const { data: allImages, error: fetchError } = await supabase
-        .from(table)
-        .select("id, priority")
-        .order("priority", { ascending: true });
-
-      if (fetchError || !allImages) {
-        console.error("Priority Fetch Error:", fetchError);
-        return false;
-      }
-
-      // 2. Prepare the new sequence in JS
-      // We exclude the one being handled if passed (for edit mode)
-      let currentItems = allImages.filter(img => !excludeId || img.id !== excludeId);
-
-      let updateQueue = [];
-      let pointer = 1;
-
-      for (const item of currentItems) {
-        // If we are shifting "UP" to make room for a new item at targetP
-        if (mode === "up" && pointer === targetP) {
-          pointer++; // Skip this slot
-        }
-
-        // Only queue an update if the priority actually needs to change
-        if (parseInt(item.priority) !== pointer) {
-          updateQueue.push({ id: item.id, newPriority: pointer });
-        }
-        pointer++;
-      }
-
-      if (updateQueue.length === 0) return true; // Nothing to shift
-
-      // 3. Sequential Update (Descending order for room-making, Ascending for gap-filling)
-      // Higher numbers first is generally safer for "up" shifts.
-      updateQueue.sort((a, b) => b.newPriority - a.newPriority);
-
-      let allUpdatesSucceeded = true;
-
-      for (const task of updateQueue) {
-        const { data: updatedData, error: updateError } = await supabase
-          .from(table)
-          .update({ priority: task.newPriority })
-          .eq("id", task.id)
-          .select();
-
-        if (updateError) {
-          console.error(`Priority Update Failed for ID ${task.id}:`, updateError);
-          allUpdatesSucceeded = false;
-        } else if (!updatedData || updatedData.length === 0) {
-          // RLS silently blocked the update — no error but 0 rows affected
-          console.warn(`Priority Update for ID ${task.id} affected 0 rows (likely RLS). Attempting direct update...`);
-
-          // Fallback: try updating with explicit columns to work around potential RLS issues
-          const { data: retryData, error: retryError } = await supabase
-            .from(table)
-            .update({ priority: task.newPriority })
-            .eq("id", task.id)
-            .select("id, priority");
-
-          if (retryError || !retryData || retryData.length === 0) {
-            console.error(`Priority Update STILL failed for ID ${task.id}. RLS policy likely missing UPDATE permission.`);
-            allUpdatesSucceeded = false;
-          }
-        }
-      }
-
-      return allUpdatesSucceeded;
-    } catch (err) {
-      console.error("Priority Re-indexing System Error:", err);
-      return false;
     }
   };
 
@@ -4162,142 +3436,271 @@ function Dashboard() {
       triggerAlert("The image should maintain an aspect ratio of 16:9, with a recommended resolution of 4096 × 2304 pixels", "Upload Info", "error");
     }
 
-    const config = {
-      staff: { file: heroStaffFile, bucket: "hero-images-staff", table: "hero_images", priority: heroStaffPriority, isActive: heroStaffActive },
-      web: { file: heroWebFile, bucket: "web-hero-images", table: "web-hero-images", priority: heroWebPriority, isActive: heroWebActive },
-      app: { file: heroAppFile, bucket: "hero-images", table: "hero_banners", priority: heroAppPriority, isActive: heroAppActive },
-    }[type];
+    if (type === "staff") {
+      if (!heroStaffFile) return;
 
-    if (!config.file) return;
+      try {
+        setHeroUploading(true);
 
-    try {
-      setHeroUploading(true);
-      let targetPriority = parseInt(config.priority) || 1;
+        // 1. Backend-mediated upload to hero-images storage bucket via FastAPI
+        const uploadRes = await heroImagesApi.uploadHeroImage(heroStaffFile);
+        if (!uploadRes || !uploadRes.image_path) {
+          throw new Error("Upload did not return an image path.");
+        }
 
-      // 1. Shift existing priorities up
-      const shiftOk = await shiftHeroPriorities(config.table, targetPriority, "up");
+        // 2. Determine target priority & is_active status
+        const targetP = heroStaffPriority ? parseInt(heroStaffPriority, 10) : undefined;
+        const isActiveVal = heroStaffActive.trim() === "" ? true : heroStaffActive.trim().toUpperCase() === "TRUE";
 
-      if (!shiftOk) {
-        // Shifting failed (likely RLS blocking updates). 
-        // Fallback: find the current max priority and insert at the end.
-        const { data: maxData } = await supabase
-          .from(config.table)
-          .select("priority")
-          .order("priority", { ascending: false })
-          .limit(1);
+        // Shift existing priorities if a custom priority was specified and conflicts exist
+        if (targetP !== undefined && !isNaN(targetP) && heroStaffImages.length > 0) {
+          const conflicting = heroStaffImages.filter(img => (parseInt(img.priority, 10) || 0) >= targetP);
+          if (conflicting.length > 0) {
+            const reorderItems = conflicting.map(img => ({
+              id: img.id,
+              priority: (parseInt(img.priority, 10) || 0) + 1,
+            }));
+            try {
+              await heroImagesApi.reorderHeroImages({ items: reorderItems });
+            } catch (reorderErr) {
+              console.warn("Priority shift during upload notice:", reorderErr);
+            }
+          }
+        }
 
-        const maxP = (maxData && maxData.length > 0) ? parseInt(maxData[0].priority) || 0 : 0;
-        targetPriority = maxP + 1;
-        console.warn(`Priority shift failed. Falling back to priority ${targetPriority} (end of list).`);
-      }
-
-      const fileName = `${Date.now()}_${config.file.name}`;
-
-      // 2. Upload to Storage
-      const { error: uploadError } = await supabase.storage
-        .from(config.bucket)
-        .upload(fileName, config.file, { upsert: false });
-
-      if (uploadError) {
-        triggerAlert(uploadError.message, "Upload Failed", "error");
-        return;
-      }
-
-      // 3. Insert into DB with the specified priority and is_active
-      const { error: insertError } = await supabase
-        .from(config.table)
-        .insert({
-          image_path: fileName,
-          priority: targetPriority,
-          is_active: config.isActive.toUpperCase() === "TRUE"
+        // 3. Create record via FastAPI
+        await heroImagesApi.createHeroImage({
+          image_path: uploadRes.image_path,
+          priority: isNaN(targetP) ? undefined : targetP,
+          is_active: isActiveVal,
         });
 
-      if (insertError) {
-        triggerAlert(insertError.message, "Database Error", "error");
-        return;
-      }
-
-      // Reset inputs
-      if (type === "staff") {
+        // Reset inputs
         setHeroStaffFile(null);
         setHeroStaffPriority("");
         setHeroStaffActive("");
         if (heroStaffInputRef.current) heroStaffInputRef.current.value = "";
+
+        triggerAlert("Image uploaded successfully ✅", "Success", "success");
+        fetchHeroImages();
+      } catch (err) {
+        console.error("Hero upload error:", err);
+        triggerAlert(err.message || "Upload failed", "Upload Failed", "error");
+      } finally {
+        setHeroUploading(false);
       }
-      if (type === "web") {
+      return;
+    }
+
+    if (type === "web") {
+      if (!heroWebFile) return;
+
+      try {
+        setHeroUploading(true);
+
+        // 1. Backend-mediated upload to web-hero-images storage bucket via FastAPI
+        const uploadRes = await heroImagesApi.uploadWebHeroImage(heroWebFile);
+        if (!uploadRes || !uploadRes.image_path) {
+          throw new Error("Upload did not return an image path.");
+        }
+
+        // 2. Determine target priority & is_active status
+        const targetP = heroWebPriority ? parseInt(heroWebPriority, 10) : undefined;
+        const isActiveVal = heroWebActive.trim() === "" ? true : heroWebActive.trim().toUpperCase() === "TRUE";
+
+        // Shift existing priorities if a custom priority was specified and conflicts exist
+        if (targetP !== undefined && !isNaN(targetP) && heroWebImages.length > 0) {
+          const conflicting = heroWebImages.filter(img => (parseInt(img.priority, 10) || 0) >= targetP);
+          if (conflicting.length > 0) {
+            const reorderItems = conflicting.map(img => ({
+              id: img.id,
+              priority: (parseInt(img.priority, 10) || 0) + 1,
+            }));
+            try {
+              await heroImagesApi.reorderWebHeroImages({ items: reorderItems });
+            } catch (reorderErr) {
+              console.warn("Priority shift during web upload notice:", reorderErr);
+            }
+          }
+        }
+
+        // 3. Create record via FastAPI
+        await heroImagesApi.createWebHeroImage({
+          image_path: uploadRes.image_path,
+          priority: isNaN(targetP) ? undefined : targetP,
+          is_active: isActiveVal,
+        });
+
+        // Reset inputs
         setHeroWebFile(null);
         setHeroWebPriority("");
         setHeroWebActive("");
         if (heroWebInputRef.current) heroWebInputRef.current.value = "";
+
+        triggerAlert("Image uploaded successfully ✅", "Success", "success");
+        fetchHeroImages();
+      } catch (err) {
+        console.error("Web hero upload error:", err);
+        triggerAlert(err.message || "Upload failed", "Upload Failed", "error");
+      } finally {
+        setHeroUploading(false);
       }
-      if (type === "app") {
+      return;
+    }
+
+    if (type === "app") {
+      if (!heroAppFile) return;
+
+      try {
+        setHeroUploading(true);
+
+        // 1. Backend-mediated upload to hero-images storage bucket via FastAPI
+        const uploadRes = await heroImagesApi.uploadAppHeroImage(heroAppFile);
+        if (!uploadRes || !uploadRes.image_path) {
+          throw new Error("Upload did not return an image path.");
+        }
+
+        // 2. Determine target priority & is_active status
+        const targetP = heroAppPriority ? parseInt(heroAppPriority, 10) : undefined;
+        const isActiveVal = heroAppActive.trim() === "" ? true : heroAppActive.trim().toUpperCase() === "TRUE";
+
+        // Shift existing priorities if a custom priority was specified and conflicts exist
+        if (targetP !== undefined && !isNaN(targetP) && heroAppImages.length > 0) {
+          const conflicting = heroAppImages.filter(img => (parseInt(img.priority, 10) || 0) >= targetP);
+          if (conflicting.length > 0) {
+            const reorderItems = conflicting.map(img => ({
+              id: img.id,
+              priority: (parseInt(img.priority, 10) || 0) + 1,
+            }));
+            try {
+              await heroImagesApi.reorderAppHeroImages({ items: reorderItems });
+            } catch (reorderErr) {
+              console.warn("Priority shift during app upload notice:", reorderErr);
+            }
+          }
+        }
+
+        // 3. Create record via FastAPI
+        await heroImagesApi.createAppHeroImage({
+          image_path: uploadRes.image_path,
+          priority: isNaN(targetP) ? undefined : targetP,
+          is_active: isActiveVal,
+        });
+
+        // Reset inputs
         setHeroAppFile(null);
         setHeroAppPriority("");
         setHeroAppActive("");
         if (heroAppInputRef.current) heroAppInputRef.current.value = "";
-      }
 
-      if (!shiftOk) {
-        triggerAlert("Image uploaded but priority shifting failed. Please check Supabase RLS policies for the table. The image was placed at the end.", "Partial Success", "info");
-      } else {
         triggerAlert("Image uploaded successfully ✅", "Success", "success");
+        fetchHeroImages();
+      } catch (err) {
+        console.error("App hero upload error:", err);
+        triggerAlert(err.message || "Upload failed", "Upload Failed", "error");
+      } finally {
+        setHeroUploading(false);
       }
-      fetchHeroImages();
-    } catch (err) {
-      console.error("Hero upload error:", err);
-      triggerAlert(err.message, "Error", "error");
-    } finally {
-      setHeroUploading(false);
+      return;
     }
   };
 
   const deleteHeroImage = async (type, id, imagePath) => {
-    const config = {
-      staff: { bucket: "hero-images-staff", table: "hero_images" },
-      web: { bucket: "web-hero-images", table: "web-hero-images" },
-      app: { bucket: "hero-images", table: "hero_banners" },
-    }[type];
+    if (type === "staff") {
+      triggerConfirm(
+        `Delete "${imagePath}"?`,
+        async () => {
+          try {
+            await heroImagesApi.deleteHeroImage(id);
 
-    // Fetch the priority of the image being deleted
-    const { data: imgToDelete } = await supabase
-      .from(config.table)
-      .select("priority")
-      .eq("id", id)
-      .single();
+            // Shift subsequent priorities down using reorderHeroImages
+            const remaining = heroStaffImages
+              .filter(img => img.id !== id)
+              .sort((a, b) => (parseInt(a.priority, 10) || 0) - (parseInt(b.priority, 10) || 0));
+            if (remaining.length > 0) {
+              const reorderItems = remaining.map((img, idx) => ({ id: img.id, priority: idx + 1 }));
+              try {
+                await heroImagesApi.reorderHeroImages({ items: reorderItems });
+              } catch (reorderErr) {
+                console.warn("Priority reorder notice after delete:", reorderErr);
+              }
+            }
 
-    const deletedPriority = imgToDelete?.priority;
+            fetchHeroImages();
+            triggerAlert("Image deleted and priorities reordered", "Deleted", "success");
+          } catch (err) {
+            console.error("Hero delete error:", err);
+            triggerAlert(err.message || "Delete failed", "Delete Failed", "error");
+          }
+        },
+        "Confirm Delete"
+      );
+      return;
+    }
 
-    triggerConfirm(
-      `Delete "${imagePath}"?`,
-      async () => {
-        // 1. Remove from Storage
-        const { data: storageData, error: storageError } = await supabase.storage.from(config.bucket).remove([imagePath]);
+    if (type === "web") {
+      triggerConfirm(
+        `Delete "${imagePath}"?`,
+        async () => {
+          try {
+            await heroImagesApi.deleteWebHeroImage(id);
 
-        if (storageError) {
-          console.error("Storage delete error:", storageError);
-          triggerAlert(`Failed to delete file from storage: ${storageError.message}`, "Storage Error", "error");
-        } else if (!storageData || storageData.length === 0) {
-          console.warn(`Storage delete returned empty result for "${imagePath}" in bucket "${config.bucket}". File may not exist or SELECT policy may be missing.`);
-        }
+            // Shift subsequent priorities down using reorderWebHeroImages
+            const remaining = heroWebImages
+              .filter(img => img.id !== id)
+              .sort((a, b) => (parseInt(a.priority, 10) || 0) - (parseInt(b.priority, 10) || 0));
+            if (remaining.length > 0) {
+              const reorderItems = remaining.map((img, idx) => ({ id: img.id, priority: idx + 1 }));
+              try {
+                await heroImagesApi.reorderWebHeroImages({ items: reorderItems });
+              } catch (reorderErr) {
+                console.warn("Priority reorder notice after delete:", reorderErr);
+              }
+            }
 
-        // 2. Remove from DB
-        const { error: deleteError } = await supabase.from(config.table).delete().eq("id", id);
+            fetchHeroImages();
+            triggerAlert("Image deleted and priorities reordered", "Deleted", "success");
+          } catch (err) {
+            console.error("Web hero delete error:", err);
+            triggerAlert(err.message || "Delete failed", "Delete Failed", "error");
+          }
+        },
+        "Confirm Delete"
+      );
+      return;
+    }
 
-        if (deleteError) {
-          triggerAlert(deleteError.message, "Delete Failed", "error");
-          return;
-        }
+    if (type === "app") {
+      triggerConfirm(
+        `Delete "${imagePath}"?`,
+        async () => {
+          try {
+            await heroImagesApi.deleteAppHeroImage(id);
 
-        // 3. Shift subsequent priorities down
-        if (deletedPriority) {
-          await shiftHeroPriorities(config.table, deletedPriority, "down");
-        }
+            // Shift subsequent priorities down using reorderAppHeroImages
+            const remaining = heroAppImages
+              .filter(img => img.id !== id)
+              .sort((a, b) => (parseInt(a.priority, 10) || 0) - (parseInt(b.priority, 10) || 0));
+            if (remaining.length > 0) {
+              const reorderItems = remaining.map((img, idx) => ({ id: img.id, priority: idx + 1 }));
+              try {
+                await heroImagesApi.reorderAppHeroImages({ items: reorderItems });
+              } catch (reorderErr) {
+                console.warn("Priority reorder notice after delete:", reorderErr);
+              }
+            }
 
-        fetchHeroImages();
-        triggerAlert("Image deleted and priorities reordered", "Deleted", "success");
-      },
-      "Confirm Delete",
-    );
+            fetchHeroImages();
+            triggerAlert("Image deleted and priorities reordered", "Deleted", "success");
+          } catch (err) {
+            console.error("App hero delete error:", err);
+            triggerAlert(err.message || "Delete failed", "Delete Failed", "error");
+          }
+        },
+        "Confirm Delete"
+      );
+      return;
+    }
   };
 
   const startEditingHero = (img) => {
@@ -4313,51 +3716,145 @@ function Dashboard() {
   };
 
   const updateHeroImage = async (type) => {
-    const config = {
-      staff: { table: "hero_images" },
-      web: { table: "web-hero-images" },
-      app: { table: "hero_banners" },
-    }[type];
+    if (type === "staff") {
+      const oldImg = heroStaffImages.find(img => img.id === editingHeroId);
+      if (!oldImg) return;
 
-    // Fetch the old image details
-    const { data: oldImg } = await supabase
-      .from(config.table)
-      .select("priority")
-      .eq("id", editingHeroId)
-      .single();
+      const oldPriority = parseInt(oldImg.priority, 10) || 1;
+      const newPriority = parseInt(editHeroPriority, 10) || 1;
+      const isActiveVal = editHeroActive.toUpperCase() === "TRUE";
 
-    if (!oldImg) return;
+      try {
+        // Shift priorities if priority has changed
+        if (oldPriority !== newPriority) {
+          const others = heroStaffImages
+            .filter(img => img.id !== editingHeroId)
+            .sort((a, b) => (parseInt(a.priority, 10) || 0) - (parseInt(b.priority, 10) || 0));
+          let reorderedItems = [];
+          let currentP = 1;
+          for (const item of others) {
+            if (currentP === newPriority) {
+              currentP++;
+            }
+            reorderedItems.push({ id: item.id, priority: currentP });
+            currentP++;
+          }
+          if (reorderedItems.length > 0) {
+            try {
+              await heroImagesApi.reorderHeroImages({ items: reorderedItems });
+            } catch (reorderErr) {
+              console.warn("Priority shift during edit notice:", reorderErr);
+            }
+          }
+        }
 
-    const oldPriority = oldImg.priority;
-    const newPriority = parseInt(editHeroPriority) || 1;
-    const isActiveVal = editHeroActive.toUpperCase() === "TRUE";
-
-    try {
-      // 1. Shift priorities if priority has changed
-      if (oldPriority !== newPriority) {
-        // First, "remove" the old one by shifting subsequent down
-        await shiftHeroPriorities(config.table, oldPriority, "down");
-
-        // Then, "insert" into new spot by shifting >= newPriority up
-        await shiftHeroPriorities(config.table, newPriority, "up", editingHeroId);
-      }
-
-      // 2. Update the record
-      const { error: updateError } = await supabase
-        .from(config.table)
-        .update({
+        await heroImagesApi.updateHeroImage(editingHeroId, {
           priority: newPriority,
-          is_active: isActiveVal
-        })
-        .eq("id", editingHeroId);
+          is_active: isActiveVal,
+        });
 
-      if (updateError) throw updateError;
+        triggerAlert("Image updated successfully ✅", "Success", "success");
+        cancelEditingHero();
+        fetchHeroImages();
+      } catch (err) {
+        console.error("Hero update error:", err);
+        triggerAlert(err.message || "Update failed", "Update Failed", "error");
+      }
+      return;
+    }
 
-      triggerAlert("Image updated successfully ✅", "Success", "success");
-      cancelEditingHero();
-      fetchHeroImages();
-    } catch (err) {
-      triggerAlert(err.message, "Update Failed", "error");
+    if (type === "web") {
+      const oldImg = heroWebImages.find(img => img.id === editingHeroId);
+      if (!oldImg) return;
+
+      const oldPriority = parseInt(oldImg.priority, 10) || 1;
+      const newPriority = parseInt(editHeroPriority, 10) || 1;
+      const isActiveVal = editHeroActive.toUpperCase() === "TRUE";
+
+      try {
+        // Shift priorities if priority has changed
+        if (oldPriority !== newPriority) {
+          const others = heroWebImages
+            .filter(img => img.id !== editingHeroId)
+            .sort((a, b) => (parseInt(a.priority, 10) || 0) - (parseInt(b.priority, 10) || 0));
+          let reorderedItems = [];
+          let currentP = 1;
+          for (const item of others) {
+            if (currentP === newPriority) {
+              currentP++;
+            }
+            reorderedItems.push({ id: item.id, priority: currentP });
+            currentP++;
+          }
+          if (reorderedItems.length > 0) {
+            try {
+              await heroImagesApi.reorderWebHeroImages({ items: reorderedItems });
+            } catch (reorderErr) {
+              console.warn("Priority shift during web edit notice:", reorderErr);
+            }
+          }
+        }
+
+        await heroImagesApi.updateWebHeroImage(editingHeroId, {
+          priority: newPriority,
+          is_active: isActiveVal,
+        });
+
+        triggerAlert("Image updated successfully ✅", "Success", "success");
+        cancelEditingHero();
+        fetchHeroImages();
+      } catch (err) {
+        console.error("Web hero update error:", err);
+        triggerAlert(err.message || "Update failed", "Update Failed", "error");
+      }
+      return;
+    }
+
+    if (type === "app") {
+      const oldImg = heroAppImages.find(img => img.id === editingHeroId);
+      if (!oldImg) return;
+
+      const oldPriority = parseInt(oldImg.priority, 10) || 1;
+      const newPriority = parseInt(editHeroPriority, 10) || 1;
+      const isActiveVal = editHeroActive.toUpperCase() === "TRUE";
+
+      try {
+        // Shift priorities if priority has changed
+        if (oldPriority !== newPriority) {
+          const others = heroAppImages
+            .filter(img => img.id !== editingHeroId)
+            .sort((a, b) => (parseInt(a.priority, 10) || 0) - (parseInt(b.priority, 10) || 0));
+          let reorderedItems = [];
+          let currentP = 1;
+          for (const item of others) {
+            if (currentP === newPriority) {
+              currentP++;
+            }
+            reorderedItems.push({ id: item.id, priority: currentP });
+            currentP++;
+          }
+          if (reorderedItems.length > 0) {
+            try {
+              await heroImagesApi.reorderAppHeroImages({ items: reorderedItems });
+            } catch (reorderErr) {
+              console.warn("Priority shift during app edit notice:", reorderErr);
+            }
+          }
+        }
+
+        await heroImagesApi.updateAppHeroImage(editingHeroId, {
+          priority: newPriority,
+          is_active: isActiveVal,
+        });
+
+        triggerAlert("Image updated successfully ✅", "Success", "success");
+        cancelEditingHero();
+        fetchHeroImages();
+      } catch (err) {
+        console.error("App hero update error:", err);
+        triggerAlert(err.message || "Update failed", "Update Failed", "error");
+      }
+      return;
     }
   };
 
@@ -4562,6 +4059,16 @@ function Dashboard() {
           Category Hub Counts
         </button>
 
+        <button
+          className={activeTab === "app-configuration" ? "active" : ""}
+          onClick={() => {
+            setActiveTab("app-configuration");
+            setIsStaffViewOpen(false);
+          }}
+        >
+          App Configuration
+        </button>
+
 
       </div>
 
@@ -4707,7 +4214,7 @@ function Dashboard() {
                               )}
                             </div>
                             <img
-                              src={`https://auth.theneatifyteam.in/storage/v1/object/public/hero-images-staff/${img.image_path}`}
+                              src={img.image_url || `https://auth.theneatifyteam.in/storage/v1/object/public/hero-images-staff/${img.image_path}`}
                               alt={img.image_path}
                               style={{
                                 width: "140px",
@@ -4847,7 +4354,7 @@ function Dashboard() {
                               )}
                             </div>
                             <img
-                              src={`https://auth.theneatifyteam.in/storage/v1/object/public/web-hero-images/${img.image_path}`}
+                              src={img.image_url || `https://auth.theneatifyteam.in/storage/v1/object/public/web-hero-images/${img.image_path}`}
                               alt={img.image_path}
                               style={{
                                 width: "140px",
@@ -4987,7 +4494,7 @@ function Dashboard() {
                               )}
                             </div>
                             <img
-                              src={`https://auth.theneatifyteam.in/storage/v1/object/public/hero-images/${img.image_path}`}
+                              src={img.image_url || `https://auth.theneatifyteam.in/storage/v1/object/public/hero-images/${img.image_path}`}
                               alt={img.image_path}
                               style={{
                                 width: "140px",
@@ -9220,6 +8727,7 @@ function Dashboard() {
           )}
 
           {activeTab === "category-hub-counts" && <CategoryHubCounts />}
+          {activeTab === "app-configuration" && <AppConfiguration />}
         </>
       )}
 

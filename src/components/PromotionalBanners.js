@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
-import { supabase } from "../supabase";
+import promotionalBannersApi from "../api/promotionalBannersApi";
+import { getServices } from "../api/catalogApi";
 import Loader from "./Loader";
 
 function PromotionalBanners({ triggerAlert, triggerConfirm }) {
@@ -38,58 +39,57 @@ function PromotionalBanners({ triggerAlert, triggerConfirm }) {
     fetchBanners();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   const fetchDependencies = async () => {
     try {
-      const [hubsRes, servsRes] = await Promise.all([
-        supabase.from("hub_locations").select("*"),
-        supabase.from("services").select("*")
+      const [hubs, servs] = await Promise.all([
+        promotionalBannersApi.getBannerLocations(),
+        getServices(),
       ]);
-      if (hubsRes.data) setHubLocations(hubsRes.data);
-      if (servsRes.data) setServicesList(servsRes.data);
+      if (hubs) setHubLocations(hubs);
+      if (servs) setServicesList(servs);
     } catch (e) {
-      console.error(e);
+      console.error("Error fetching promotional banner dependencies:", e);
     }
   };
 
   const fetchBanners = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("promotional_banners")
-        .select("*, promotional_banner_locations ( location_id ), promotional_banner_services ( service_id )")
-        .order("display_order", { ascending: true });
-
-      if (error) throw error;
+      const data = await promotionalBannersApi.getPromotionalBanners();
       setBanners(data || []);
     } catch (err) {
-      console.error(err);
-      triggerAlert(err.message, "Fetch Error", "error");
+      console.error("Error fetching promotional banners:", err);
+      triggerAlert(err.message || "Failed to load promotional banners", "Fetch Error", "error");
     } finally {
       setLoading(false);
     }
   };
 
-  const shiftPriorities = async (targetPriority, direction = "up") => {
-    const { data: existing } = await supabase
-      .from("promotional_banners")
-      .select("id, display_order")
-      .gte("display_order", targetPriority)
-      .order("display_order", { ascending: true });
+  const shiftPriorities = async (targetPriority, direction = "up", excludeId = null) => {
+    const targetP = parseInt(targetPriority, 10);
+    if (isNaN(targetP)) return true;
 
-    if (!existing || existing.length === 0) return true;
+    const filtered = banners
+      .filter(b => (!excludeId || b.id !== excludeId) && (parseInt(b.display_order, 10) || 0) >= targetP)
+      .sort((a, b) => (parseInt(a.display_order, 10) || 0) - (parseInt(b.display_order, 10) || 0));
 
-    for (const item of existing) {
-      const newOrder = direction === "up" ? item.display_order + 1 : item.display_order - 1;
-      const { error } = await supabase
-        .from("promotional_banners")
-        .update({ display_order: newOrder })
-        .eq("id", item.id);
-      if (error) {
-        console.error("Shift error:", error);
-        return false;
-      }
+    if (filtered.length === 0) return true;
+
+    const reorderItems = filtered.map(item => ({
+      id: item.id,
+      display_order: direction === "up"
+        ? (parseInt(item.display_order, 10) || 0) + 1
+        : Math.max(1, (parseInt(item.display_order, 10) || 0) - 1),
+    }));
+
+    try {
+      await promotionalBannersApi.reorderPromotionalBanners({ items: reorderItems });
+      return true;
+    } catch (err) {
+      console.warn("Priority shift notice:", err);
+      return false;
     }
-    return true;
   };
 
   const resetForm = () => {
@@ -114,7 +114,7 @@ function PromotionalBanners({ triggerAlert, triggerConfirm }) {
   const handleEditClick = (banner) => {
     setEditingBannerId(banner.id);
     setEditingBanner(banner);
-    setPriority(banner.display_order.toString());
+    setPriority(banner.display_order ? banner.display_order.toString() : "");
     setIsActive(banner.is_active ? "true" : "false");
     setStartDate(banner.start_date ? banner.start_date.substring(0, 16) : "");
     setEndDate(banner.end_date ? banner.end_date.substring(0, 16) : "");
@@ -124,9 +124,9 @@ function PromotionalBanners({ triggerAlert, triggerConfirm }) {
     setServiceScope(banner.service_scope || "all");
     setOfferPercentage(banner.offer_percentage ? banner.offer_percentage.toString() : "");
     setBannerType(banner.banner_type || "");
-    setSelectedLocations(banner.promotional_banner_locations?.map(l => l.location_id) || []);
-    setSelectedServices(banner.promotional_banner_services?.map(s => s.service_id) || []);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setSelectedLocations(banner.location_ids || banner.promotional_banner_locations?.map(l => l.location_id) || []);
+    setSelectedServices(banner.service_ids || banner.promotional_banner_services?.map(s => s.service_id) || []);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const handleUpload = async () => {
@@ -154,11 +154,7 @@ function PromotionalBanners({ triggerAlert, triggerConfirm }) {
     }
 
     if (!bannerType) {
-      triggerAlert(
-        "Please select a Banner Type.",
-        "Validation Error",
-        "error"
-      );
+      triggerAlert("Please select a Banner Type.", "Validation Error", "error");
       return;
     }
     if (serviceScope === "selected" && selectedServices.length === 0) {
@@ -168,173 +164,123 @@ function PromotionalBanners({ triggerAlert, triggerConfirm }) {
 
     setUploading(true);
     try {
-      let targetPriority = parseInt(priority);
+      let targetPriority = priority ? parseInt(priority, 10) : undefined;
 
-      // Calculate priority if empty
-      if (!priority) {
-        if (editingBannerId) {
-          targetPriority = editingBanner.display_order;
-        } else {
-          const { data: maxData } = await supabase
-            .from("promotional_banners")
-            .select("display_order")
-            .order("display_order", { ascending: false })
-            .limit(1);
-          const maxP = (maxData && maxData.length > 0) ? parseInt(maxData[0].display_order) || 0 : 0;
-          targetPriority = maxP + 1;
-        }
-      } else if (!editingBannerId || (editingBannerId && targetPriority !== editingBanner.display_order)) {
-        // Shift priorities only if priority explicitly changed or new banner
-        let shiftOk = await shiftPriorities(targetPriority, "up");
-        if (!shiftOk) {
-          console.warn("Priority shift failed.");
+      // Shift priorities only if priority explicitly changed or new banner with explicit priority
+      if (targetPriority !== undefined && !isNaN(targetPriority)) {
+        if (!editingBannerId || (editingBannerId && targetPriority !== editingBanner.display_order)) {
+          await shiftPriorities(targetPriority, "up", editingBannerId);
         }
       }
 
       let imageUrl = editingBanner?.image_url;
-      let uniqueName = editingBanner?.storage_path;
+      let storagePath = editingBanner?.storage_path;
 
-      // Upload to Storage if new file
+      // Upload to Storage via FastAPI if new file selected
       if (file) {
-        const fileExt = file.name.split(".").pop();
-        uniqueName = `${Date.now()}_banner.${fileExt}`;
-
-        const { error: uploadError } = await supabase.storage
-          .from("promotional_banners")
-          .upload(uniqueName, file, { upsert: false });
-
-        if (uploadError) {
-          triggerAlert(uploadError.message, "Upload Failed", "error");
-          setUploading(false);
-          return;
+        const uploadRes = await promotionalBannersApi.uploadPromotionalBanner(file);
+        if (!uploadRes || (!uploadRes.image_path && !uploadRes.image_url)) {
+          throw new Error("Failed to upload banner image to server.");
         }
-
-        const { data: publicUrlData } = supabase.storage
-          .from("promotional_banners")
-          .getPublicUrl(uniqueName);
-
-        imageUrl = publicUrlData.publicUrl;
-
-        // Optionally delete old file if replacing
-        if (editingBannerId && editingBanner.storage_path) {
-          await supabase.storage.from("promotional_banners").remove([editingBanner.storage_path]);
-        }
+        imageUrl = uploadRes.image_url;
+        storagePath = uploadRes.image_path;
       }
 
       const payload = {
-        image_url: imageUrl,
-        storage_path: uniqueName,
-        display_order: targetPriority,
+        image_url: imageUrl || "",
+        storage_path: storagePath || "",
+        display_order: isNaN(targetPriority) ? undefined : targetPriority,
         is_active: isActive === "true",
-        start_date: startDate || null,
-        end_date: endDate || null,
+        start_date: startDate ? new Date(startDate).toISOString() : null,
+        end_date: endDate ? new Date(endDate).toISOString() : null,
         customer_type: customerType,
         booking_condition: bookingCondition,
+        location_scope: pincodeScope,
         pincode_scope: pincodeScope,
         service_scope: serviceScope,
         offer_percentage: Number(offerPercentage),
         banner_type: bannerType,
-        updated_at: new Date().toISOString()
+        location_ids: pincodeScope === "selected" ? selectedLocations : [],
+        service_ids: serviceScope === "selected" ? selectedServices : [],
       };
 
-      let bannerId = editingBannerId;
-
-      // Update or Insert Banner
+      // Update or Create Banner via FastAPI (backend manages junction tables atomically)
       if (editingBannerId) {
-        const { error: updateError } = await supabase
-          .from("promotional_banners")
-          .update(payload)
-          .eq("id", editingBannerId);
-        if (updateError) throw updateError;
+        await promotionalBannersApi.updatePromotionalBanner(editingBannerId, payload);
       } else {
-        const { data: newBanner, error: insertError } = await supabase
-          .from("promotional_banners")
-          .insert(payload)
-          .select("id")
-          .single();
-        if (insertError) throw insertError;
-        bannerId = newBanner.id;
+        await promotionalBannersApi.createPromotionalBanner(payload);
       }
 
-      // Handle Relations
-      if (editingBannerId) {
-        await supabase.from("promotional_banner_locations").delete().eq("banner_id", bannerId);
-        await supabase.from("promotional_banner_services").delete().eq("banner_id", bannerId);
-      }
-
-      if (pincodeScope === "selected" && selectedLocations.length > 0) {
-        const locPayload = selectedLocations.map(id => ({ banner_id: bannerId, location_id: id }));
-        const { error } = await supabase.from("promotional_banner_locations").insert(locPayload);
-        if (error) console.error(error);
-      }
-
-      if (serviceScope === "selected" && selectedServices.length > 0) {
-        const servPayload = selectedServices.map(id => ({ banner_id: bannerId, service_id: id }));
-        const { error } = await supabase.from("promotional_banner_services").insert(servPayload);
-        if (error) console.error(error);
-      }
-
-      triggerAlert(editingBannerId ? "Banner updated successfully ?" : "Banner uploaded successfully ?", "Success", "success");
+      triggerAlert(
+        editingBannerId ? "Banner updated successfully ✅" : "Banner uploaded successfully ✅",
+        "Success",
+        "success"
+      );
       resetForm();
       fetchBanners();
     } catch (err) {
-      console.error(err);
-      triggerAlert(err.message, "Error", "error");
+      console.error("Promotional banner save error:", err);
+      triggerAlert(err.message || "Failed to save promotional banner", "Error", "error");
+      fetchBanners();
     } finally {
       setUploading(false);
     }
   };
 
   const toggleActive = async (banner) => {
-    const { error } = await supabase
-      .from("promotional_banners")
-      .update({ is_active: !banner.is_active })
-      .eq("id", banner.id);
-
-    if (error) {
-      triggerAlert(error.message, "Toggle Failed", "error");
-    } else {
+    try {
+      await promotionalBannersApi.togglePromotionalBannerActive(banner.id);
+      fetchBanners();
+    } catch (err) {
+      console.error("Toggle active error:", err);
+      triggerAlert(err.message || "Toggle Failed", "Toggle Failed", "error");
       fetchBanners();
     }
   };
 
   const handleDelete = (banner) => {
-    triggerConfirm("Delete this promotional banner?", async () => {
-      try {
-        if (banner.storage_path) {
-          const { error: storageError } = await supabase.storage
-            .from("promotional_banners")
-            .remove([banner.storage_path]);
-          if (storageError) {
-            console.error("Storage delete error:", storageError);
+    triggerConfirm(
+      "Delete this promotional banner?",
+      async () => {
+        try {
+          await promotionalBannersApi.deletePromotionalBanner(banner.id);
+
+          // Re-index remaining banners to fill priority gap
+          const remaining = banners
+            .filter(b => b.id !== banner.id)
+            .sort((a, b) => (parseInt(a.display_order, 10) || 0) - (parseInt(b.display_order, 10) || 0));
+
+          if (remaining.length > 0) {
+            const reorderItems = remaining.map((b, idx) => ({ id: b.id, display_order: idx + 1 }));
+            try {
+              await promotionalBannersApi.reorderPromotionalBanners({ items: reorderItems });
+            } catch (reorderErr) {
+              console.warn("Priority reorder notice after delete:", reorderErr);
+            }
           }
+
+          fetchBanners();
+          triggerAlert("Banner deleted", "Deleted", "success");
+        } catch (err) {
+          console.error("Delete promotional banner error:", err);
+          triggerAlert(err.message || "Failed to delete promotional banner", "Error", "error");
+          fetchBanners();
         }
-
-        const { error: deleteError } = await supabase
-          .from("promotional_banners")
-          .delete()
-          .eq("id", banner.id);
-
-        if (deleteError) {
-          triggerAlert(deleteError.message, "Delete Failed", "error");
-          return;
-        }
-
-        await shiftPriorities(banner.display_order, "down");
-        fetchBanners();
-        triggerAlert("Banner deleted", "Deleted", "success");
-      } catch (err) {
-        triggerAlert(err.message, "Error", "error");
-      }
-    }, "Confirm Delete");
+      },
+      "Confirm Delete"
+    );
   };
 
   const handleToggleLocation = (locId) => {
-    setSelectedLocations(prev => prev.includes(locId) ? prev.filter(id => id !== locId) : [...prev, locId]);
+    setSelectedLocations(prev =>
+      prev.includes(locId) ? prev.filter(id => id !== locId) : [...prev, locId]
+    );
   };
 
   const handleToggleService = (srvId) => {
-    setSelectedServices(prev => prev.includes(srvId) ? prev.filter(id => id !== srvId) : [...prev, srvId]);
+    setSelectedServices(prev =>
+      prev.includes(srvId) ? prev.filter(id => id !== srvId) : [...prev, srvId]
+    );
   };
 
   return (
@@ -494,7 +440,7 @@ function PromotionalBanners({ triggerAlert, triggerConfirm }) {
                       {hubLocations.map(loc => (
                         <div key={loc.id} style={{ display: "flex", alignItems: "center", marginBottom: "5px" }}>
                           <input type="checkbox" id={`loc-${loc.id}`} checked={selectedLocations.includes(loc.id)} onChange={() => handleToggleLocation(loc.id)} style={{ marginRight: "8px" }} />
-                          <label htmlFor={`loc-${loc.id}`} style={{ fontSize: "13px", color: "#334155", cursor: "pointer" }}>{loc.hub_name} ({loc.pincode})</label>
+                          <label htmlFor={`loc-${loc.id}`} style={{ fontSize: "13px", color: "#334155", cursor: "pointer" }}>{loc.hub_name || loc.name} {loc.pincode ? `(${loc.pincode})` : ""}</label>
                         </div>
                       ))}
                     </div>
@@ -513,7 +459,7 @@ function PromotionalBanners({ triggerAlert, triggerConfirm }) {
                       {servicesList.map(srv => (
                         <div key={srv.id} style={{ display: "flex", alignItems: "center", marginBottom: "5px" }}>
                           <input type="checkbox" id={`srv-${srv.id}`} checked={selectedServices.includes(srv.id)} onChange={() => handleToggleService(srv.id)} style={{ marginRight: "8px" }} />
-                          <label htmlFor={`srv-${srv.id}`} style={{ fontSize: "13px", color: "#334155", cursor: "pointer" }}>{srv.title}</label>
+                          <label htmlFor={`srv-${srv.id}`} style={{ fontSize: "13px", color: "#334155", cursor: "pointer" }}>{srv.title || srv.service_name}</label>
                         </div>
                       ))}
                     </div>
@@ -630,4 +576,3 @@ function PromotionalBanners({ triggerAlert, triggerConfirm }) {
 }
 
 export default PromotionalBanners;
-

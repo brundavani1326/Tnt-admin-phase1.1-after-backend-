@@ -1,7 +1,14 @@
 import { useEffect, useState, useRef } from "react";
 import { supabase, supabaseFunctionsUrl } from "../supabase";
+import { getBookingDetail } from "../api/bookingApi";
 import Loader from "./Loader";
 import neatifyLogo from "../neatifylogo.png";
+import {
+  isImageUrl,
+  getImages,
+  extractUrlsAndLabels,
+  isImageAvailable,
+} from "../utils/bookingImageUtils";
 
 const LiveLocationCell = ({ locationStr }) => {
   const [address, setAddress] = useState(null);
@@ -672,6 +679,45 @@ const isPartialPaymentService = (b, allServices = [], paymentsMap = {}) => {
 
   return false;
 };
+
+const renderPaymentCells = (b, paymentsMap = {}, services = []) => {
+  const finalPriceVal =
+    b?.total_amount !== undefined && b?.total_amount !== null
+      ? b.total_amount
+      : b?.price !== undefined && b?.price !== null
+      ? b.price
+      : null;
+  const finalPriceDisplay = finalPriceVal !== null ? `₹${finalPriceVal}` : "N/A";
+
+  const { advanceAmount, pendingAmount } = getBookingPaymentDetails(b, paymentsMap);
+  const isPartial = isPartialPaymentService(b, services, paymentsMap);
+
+  return (
+    <>
+      <td style={{ fontWeight: "700", color: "#0f172a" }}>
+        {finalPriceDisplay}
+      </td>
+      <td style={{ fontWeight: "600", color: "#1e293b" }}>
+        {advanceAmount}
+      </td>
+      <td style={{ fontWeight: "700", color: "#ef4444" }}>
+        {pendingAmount}
+      </td>
+      <td>
+        {isPartial ? (
+          <span style={{ color: "#d97706", fontWeight: "800" }}>
+            PARTIAL PAYMENT
+          </span>
+        ) : (
+          <span style={{ color: "#16a34a", fontWeight: "800" }}>
+            FULL PAYMENT
+          </span>
+        )}
+      </td>
+    </>
+  );
+};
+
 const isAllotStaffEnabled = (b) => {
   if (!b) return false;
 
@@ -4242,67 +4288,6 @@ END TEMPORARILY DISABLED T&C + OTP FLOW
   /* ================= STAFF FLOW ================= */
 
 
-  const getImages = (img) => {
-    if (!img) return [];
-    if (Array.isArray(img)) return img;
-    if (typeof img === "string" && img.trim().startsWith("[")) {
-      try {
-        const parsed = JSON.parse(img);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        // If it's a string like "[Skipped]..." it might fail JSON parse, 
-        // but we'll treat it as a single string outside the try/catch
-      }
-    }
-    return [img];
-  };
-
-  const isImageUrl = (str) => {
-    if (typeof str !== "string") return false;
-    const s = str.toLowerCase().trim();
-    return s.startsWith("http") || s.startsWith("https") || s.startsWith("data:image/");
-  };
-
-  const extractUrlsAndLabels = (sectionObj) => {
-    let urls = [];
-    let labels = [];
-    if (!sectionObj) return { urls, labels };
-    if (typeof sectionObj === "string") {
-      if (sectionObj.trim()) {
-        urls.push(sectionObj.trim());
-        labels.push("");
-      }
-    } else if (Array.isArray(sectionObj)) {
-      sectionObj.forEach((item, idx) => {
-        if (typeof item === "string" && item.trim()) {
-          urls.push(item.trim());
-          labels.push(`upload_${idx + 1}`);
-        } else if (item && typeof item === "object") {
-          const uUrl = item.url || item.src || item.path || Object.values(item)[0];
-          if (typeof uUrl === "string" && uUrl.trim()) {
-            urls.push(uUrl.trim());
-            labels.push(item.label || item.name || `upload_${idx + 1}`);
-          }
-        }
-      });
-    } else if (typeof sectionObj === "object") {
-      Object.entries(sectionObj).forEach(([key, val]) => {
-        if (typeof val === "string" && val.trim()) {
-          urls.push(val.trim());
-          labels.push(key);
-        } else if (Array.isArray(val)) {
-          val.forEach((v) => {
-            if (typeof v === "string" && v.trim()) {
-              urls.push(v.trim());
-              labels.push(key);
-            }
-          });
-        }
-      });
-    }
-    return { urls, labels };
-  };
-
   const handleViewBookingImages = async (b, type) => {
     setCurrentImgIndex(0);
     setImgLoading(true);
@@ -4310,48 +4295,28 @@ END TEMPORARILY DISABLED T&C + OTP FLOW
 
     let uploadData = uploadsMap[b.id];
 
-    // If not yet loaded in cache, search service_uploads using this specific booking ID only
+    // If not yet loaded in cache, fetch booking detail from FastAPI Admin Backend
     if (!uploadData) {
       try {
-        const { data: uploadsList, error: uploadErr } = await supabase
-          .from("service_uploads")
-          .select("*")
-          .eq("booking_id", b.id)
-          .limit(1);
-
-        let uploadRec = uploadsList && uploadsList[0];
-
-        // Fallback: if not found by b.id and b.booking_id is distinct, try b.booking_id
-        if (!uploadRec && b.booking_id && String(b.booking_id) !== String(b.id)) {
-          const { data: fallbackList } = await supabase
-            .from("service_uploads")
-            .select("*")
-            .eq("booking_id", b.booking_id)
-            .limit(1);
-          if (fallbackList && fallbackList[0]) {
-            uploadRec = fallbackList[0];
-          }
-        }
-
-        if (uploadErr) {
-          console.error("Error fetching service_uploads for booking:", uploadErr);
-        } else if (uploadRec) {
-          let parsedUploads = uploadRec.uploads;
-          if (typeof parsedUploads === "string") {
-            try {
-              parsedUploads = JSON.parse(parsedUploads);
-            } catch (err) {
-              console.error("Error parsing service_uploads JSON string:", err);
-            }
-          }
+        const detail = await getBookingDetail(b.id);
+        if (detail) {
+          const uploadsObj = detail.service_uploads || detail.uploads?.uploads || detail.uploads || null;
+          const staffEmailStr =
+            detail.service_uploads_record?.staff_email ||
+            detail.service_uploads_record?.email ||
+            detail.uploads?.email ||
+            detail.assigned_staff?.email ||
+            detail.booking?.assigned_staff_email ||
+            b.assigned_staff_email;
           uploadData = {
-            uploads: parsedUploads,
-            email: uploadRec.staff_email || uploadRec.email
+            uploads: uploadsObj,
+            email: staffEmailStr,
+            booking: detail.booking || detail,
           };
           setUploadsMap((prev) => ({ ...prev, [b.id]: uploadData }));
         }
       } catch (err) {
-        console.error("Error in handleViewBookingImages:", err);
+        console.error("Error fetching booking details via FastAPI in handleViewBookingImages:", err);
       }
     }
 
@@ -4367,11 +4332,20 @@ END TEMPORARILY DISABLED T&C + OTP FLOW
     const isStart = type === "start";
     const section = isStart ? rawUploads?.before : rawUploads?.after;
     const { urls, labels } = extractUrlsAndLabels(section);
-    const fallbackUrls = getImages(isStart ? b.start_photo_url : b.end_photo_url);
-    const finalUrls = urls.length > 0 ? urls : fallbackUrls;
-    const finalLabels = urls.length > 0 ? labels : [];
+    const directPhoto = isStart
+      ? (uploadData?.booking?.start_photo_url || b.start_photo_url)
+      : (uploadData?.booking?.end_photo_url || b.end_photo_url);
+    const fallbackUrls = getImages(directPhoto);
+
+    let finalUrls = urls && urls.length > 0 ? urls : fallbackUrls;
+    let finalLabels = urls && urls.length > 0 ? labels : [];
 
     if (finalUrls && finalUrls.length > 0) {
+      if (finalLabels.length === 0 && finalUrls.length > 1) {
+        finalLabels = finalUrls.map((_, idx) => `Upload ${idx + 1}`);
+      } else if (finalLabels.length === 0 && finalUrls.length === 1 && !isImageUrl(finalUrls[0])) {
+        finalLabels = ["Skip Reason"];
+      }
       setModalImages(finalUrls);
       setModalImageLabels(finalLabels);
     } else {
@@ -4381,7 +4355,6 @@ END TEMPORARILY DISABLED T&C + OTP FLOW
 
     setImgLoading(false);
   };
-
 
   const fetchStaffAvailability = async (email, name, date) => {
     try {
@@ -8027,6 +8000,32 @@ const unassignedBookings = bookings.filter((b) =>
                 <th style={{ minWidth: "80px" }}>Delete</th>
                 <th style={{ minWidth: "80px" }}>Copy</th>
               </tr>
+            ) : activeTab === "assigned" ? (
+              <tr>
+                <th style={{ minWidth: "160px" }}>Created At</th>
+                <th style={{ minWidth: "120px" }}>Booking ID</th>
+                <th style={{ minWidth: "100px" }}>Platform</th>
+                <th style={{ minWidth: "120px" }}>Total Amount</th>
+                <th style={{ minWidth: "130px" }}>Payment Status</th>
+                <th style={{ minWidth: "180px" }}>Transaction ID</th>
+                <th style={{ minWidth: "160px" }}>Customer</th>
+                <th style={{ minWidth: "130px" }}>Phone</th>
+                <th style={{ minWidth: "200px" }}>Email</th>
+                <th style={{ minWidth: "350px" }}>Full Address</th>
+                <th style={{ minWidth: "160px" }}>Location</th>
+                <th style={{ minWidth: "180px" }}>Service</th>
+                <th style={{ minWidth: "250px" }}>Add-on</th>
+                <th style={{ minWidth: "120px" }}>Date</th>
+                <th style={{ minWidth: "100px" }}>Time</th>
+                <th style={{ minWidth: "120px" }}>Final Price</th>
+                <th style={{ minWidth: "140px" }}>Advance Amount</th>
+                <th style={{ minWidth: "140px" }}>Pending Amount</th>
+                <th style={{ minWidth: "130px" }}>Payment Type</th>
+                <th style={{ minWidth: "160px" }}>Assigned Staff</th>
+                <th style={{ minWidth: "140px" }}>Action</th>
+                <th style={{ minWidth: "80px" }}>Delete</th>
+                <th style={{ minWidth: "80px" }}>Copy</th>
+              </tr>
             ) : (
               <tr>
                 <th style={{ minWidth: "160px" }}>Created At</th>
@@ -8146,30 +8145,42 @@ const unassignedBookings = bookings.filter((b) =>
                         <td>{email || "N/A"}</td>
                         <td>{reviewsMap[b.id] || "-"}</td>
                         <td>
-                          <button
-                            className="allot-btn"
-                            disabled={b.payment_status !== "paid"}
-                            style={{
-                              opacity: b.payment_status === "paid" ? 1 : 0.5,
-                              cursor: b.payment_status === "paid" ? "pointer" : "not-allowed",
-                            }}
-                            onClick={() => handleViewBookingImages(b, "start")}
-                          >
-                            View
-                          </button>
+                          {(() => {
+                            const isStartEnabled = isImageAvailable(b, "start", uploadsMap);
+                            return (
+                              <button
+                                className="allot-btn"
+                                disabled={!isStartEnabled}
+                                style={{
+                                  opacity: isStartEnabled ? 1 : 0.5,
+                                  cursor: isStartEnabled ? "pointer" : "not-allowed",
+                                }}
+                                onClick={() => handleViewBookingImages(b, "start")}
+                                title={isStartEnabled ? "View Start Image" : "No start images available"}
+                              >
+                                View
+                              </button>
+                            );
+                          })()}
                         </td>
                         <td>
-                          <button
-                            className="allot-btn"
-                            disabled={b.payment_status !== "paid"}
-                            style={{
-                              opacity: b.payment_status === "paid" ? 1 : 0.5,
-                              cursor: b.payment_status === "paid" ? "pointer" : "not-allowed",
-                            }}
-                            onClick={() => handleViewBookingImages(b, "end")}
-                          >
-                            View
-                          </button>
+                          {(() => {
+                            const isEndEnabled = isImageAvailable(b, "end", uploadsMap);
+                            return (
+                              <button
+                                className="allot-btn"
+                                disabled={!isEndEnabled}
+                                style={{
+                                  opacity: isEndEnabled ? 1 : 0.5,
+                                  cursor: isEndEnabled ? "pointer" : "not-allowed",
+                                }}
+                                onClick={() => handleViewBookingImages(b, "end")}
+                                title={isEndEnabled ? "View End Image" : "No end images available"}
+                              >
+                                View
+                              </button>
+                            );
+                          })()}
                         </td>
                       </>
                     );
@@ -8911,43 +8922,7 @@ const unassignedBookings = bookings.filter((b) =>
                             <td>{getBookingAddOnsDisplay(b)}</td>
                             <td>{formatDate(b.booking_date)}</td>
                             <td>{b.booking_time}</td>
-                            <td style={{ fontWeight: "700", color: "#0f172a" }}>
-                              {b.total_amount !== undefined && b.total_amount !== null ? `₹${b.total_amount}` : "N/A"}
-                            </td>
-                            {(() => {
-                              const {
-  advanceAmount,
-  pendingAmount,
-} = getBookingPaymentDetails(b, bookingPaymentsMap);
-
-return (
-                                <>
-                                  <td style={{ fontWeight: "600", color: "#1e293b" }}>
-                                    {advanceAmount}
-                                  </td>
-
-                                  <td style={{ fontWeight: "700", color: "#ef4444" }}>
-                                    {pendingAmount}
-                                  </td>
-
-                                  <td>
-                                    {isPartialPaymentService(
-                                      b,
-                                      allServices,
-                                      bookingPaymentsMap
-                                    ) ? (
-                                      <span style={{ color: "#d97706", fontWeight: "800" }}>
-                                        PARTIAL PAYMENT
-                                      </span>
-                                    ) : (
-                                      <span style={{ color: "#16a34a", fontWeight: "800" }}>
-                                        FULL PAYMENT
-                                      </span>
-                                    )}
-                                  </td>
-                                </>
-                              );
-                            })()}
+                            {renderPaymentCells(b, bookingPaymentsMap, allServices)}
                             <td>{b.remarks || b.services?.[0]?.remarks || "N/A"}</td>
                             <td>
                               {b.assigned_staff_email ? (
@@ -9185,6 +9160,7 @@ return (
                             <td>{getBookingAddOnsDisplay(b)}</td>
                             <td>{formatDate(b.booking_date)}</td>
                             <td>{b.booking_time}</td>
+                            {activeTab === "assigned" && renderPaymentCells(b, bookingPaymentsMap, allServices)}
                             <td>
                               {b.assigned_staff_email ? (
                                 <div>
@@ -11125,4 +11101,5 @@ END TEMPORARILY DISABLED OTP UI
   );
 }
 
+export { getBookingPaymentDetails, isPartialPaymentService, renderPaymentCells };
 export default BookingPage;

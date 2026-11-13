@@ -29,7 +29,9 @@ const supabaseAnonKey = isSupabaseConfigured ? rawKey : "placeholder-key";
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     storage: window.sessionStorage,
-    autoRefreshToken: isSupabaseConfigured,
+    // Set to false during Phase 3D: Token refresh is centrally managed by FastAPI
+    // to avoid independent token rotation races between Supabase SDK and FastAPI backend.
+    autoRefreshToken: false,
     persistSession: isSupabaseConfigured,
     detectSessionInUrl: isSupabaseConfigured,
   },

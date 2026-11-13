@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { supabase } from "../supabase";
+
+import { getCategory, updateCategory, uploadCatalogImage } from "../api/catalogApi";
 import Loader from "./Loader";
 
 function EditMainCategory() {
@@ -22,11 +23,12 @@ function EditMainCategory() {
   useEffect(() => {
     const fetchCategory = async () => {
       setLoading(true);
-      const { data, error } = await supabase
-        .from("main_categories")
-        .select("*")
-        .eq("id", id)
-        .single();
+      let data = null;
+      try {
+        data = await getCategory(id);
+      } catch (err) {
+        console.error("Error fetching category:", err);
+      }
 
       if (data) {
         setFormData({
@@ -34,9 +36,6 @@ function EditMainCategory() {
           sort_order: data.sort_order !== null ? data.sort_order : "",
           icon_url: data.icon_url || "",
         });
-      }
-      if (error) {
-        console.error("Error fetching category:", error);
       }
       setLoading(false);
     };
@@ -79,37 +78,21 @@ function EditMainCategory() {
           return;
         }
 
-        const fileExt = imageFile.name.split(".").pop();
-        const fileName = `main/category_icon/category_${Date.now()}.${fileExt}`;
-        
-        const { error: uploadError } = await supabase.storage
-          .from("category-icons")
-          .upload(fileName, imageFile);
-
-        if (uploadError) {
-          throw new Error("Image upload failed: " + uploadError.message);
-        }
-
-        const { data: publicUrlData } = supabase.storage.from("category-icons").getPublicUrl(fileName);
-        iconUrl = publicUrlData.publicUrl;
+        const uploadRes = await uploadCatalogImage(imageFile, "category-icons", "main/category_icon");
+        iconUrl = uploadRes.public_url;
       }
 
-      // 2. Update main_categories
-      const { error } = await supabase
-        .from("main_categories")
-        .update({
-          name: formData.name.trim(),
-          sort_order: formData.sort_order ? parseInt(formData.sort_order) : null,
-          icon_url: iconUrl,
-        })
-        .eq("id", id);
-
-      if (error) throw error;
+      // 2. Update main_categories via FastAPI
+      await updateCategory(id, {
+        name: formData.name.trim(),
+        sort_order: formData.sort_order ? parseInt(formData.sort_order) : null,
+        icon_url: iconUrl,
+      });
 
       setShowAlert(true);
     } catch (err) {
       console.error("Error updating category:", err);
-      setUpdateError(err.message || "Failed to update category.");
+      alert(err.message || "Failed to update category");
     } finally {
       setUpdating(false);
     }

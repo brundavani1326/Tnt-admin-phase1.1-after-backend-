@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../supabase";
+import staffApi from "../api/staffApi";
 
 const POLL_INTERVAL_MS = 5000;
 const RECENT_ROWS_LIMIT = 20;
@@ -24,7 +25,14 @@ function StaffCancellationAlert() {
   const processCancellation = useCallback(async (record) => {
     if (!record?.id) return;
 
-    const [{ data: booking, error: bookingError }, { data: staffProfile, error: staffError }] =
+    const staffPromise = record.staff_email
+      ? staffApi.getStaffByEmail(record.staff_email).catch((err) => {
+          console.warn("⚠️ Could not fetch staff profile via API:", err);
+          return null;
+        })
+      : Promise.resolve(null);
+
+    const [{ data: booking, error: bookingError }, staffProfile] =
       await Promise.all([
         record.booking_id
           ? supabase
@@ -33,20 +41,11 @@ function StaffCancellationAlert() {
               .eq("id", record.booking_id)
               .maybeSingle()
           : Promise.resolve({ data: null, error: null }),
-        record.staff_email
-          ? supabase
-              .from("staff_profile")
-              .select("name,email")
-              .eq("email", record.staff_email)
-              .maybeSingle()
-          : Promise.resolve({ data: null, error: null }),
+        staffPromise,
       ]);
 
     if (bookingError) {
       console.error("❌ Error fetching cancelled booking:", bookingError);
-    }
-    if (staffError) {
-      console.warn("⚠️ Could not fetch staff profile:", staffError);
     }
 
     setCancellation({

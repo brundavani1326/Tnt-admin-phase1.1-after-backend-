@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { supabase } from "../supabase";
+
+import {
+  getCategories,
+  getServices,
+  getService,
+  updateService as updateServiceApi,
+  getAddons,
+  uploadCatalogImage,
+} from "../api/catalogApi";
 import Loader from "./Loader";
 import ServiceHowItWorksVideos from "./ServiceHowItWorksVideos";
 
@@ -47,11 +55,12 @@ function EditService() {
   useEffect(() => {
     const fetchService = async () => {
       setLoading(true);
-      const { data } = await supabase
-        .from("services")
-        .select("*")
-        .eq("id", id)
-        .single();
+      let data = null;
+      try {
+        data = await getService(id);
+      } catch (err) {
+        console.error("Error fetching service:", err);
+      }
 
       if (data) {
         const defaultFee = (Number(String(data.price || "").replace(/[^0-9]/g, '')) >= 2000 || /deep/i.test(data.title || "") || /deep/i.test(data.service_type || "")) ? "299" : "99";
@@ -98,10 +107,12 @@ function EditService() {
 
         // Fetch related addons BASED ON data.service_type
         if (data.service_type) {
-          const { data: addonData } = await supabase
-            .from("add_ons")
-            .select("*")
-            .ilike("service_type", data.service_type.trim());
+          let addonData = [];
+          try {
+            addonData = await getAddons({ service_type: data.service_type.trim() });
+          } catch (err) {
+            console.error("Error fetching addons:", err);
+          }
           
           if (addonData && addonData.length > 0) {
             setAddons(addonData.map(a => ({
@@ -123,12 +134,13 @@ function EditService() {
 
   useEffect(() => {
     const fetchMainCategories = async () => {
-      const { data, error } = await supabase
-        .from("main_categories")
-        .select("id, name, sort_order")
-        .order("sort_order", { ascending: true });
-      if (!error && data) {
-        setMainCategories(data);
+      try {
+        const data = await getCategories({ sort_by: "sort_order", sort_order: "asc" });
+        if (data) {
+          setMainCategories(data);
+        }
+      } catch (err) {
+        console.error("Error fetching main categories:", err);
       }
     };
     fetchMainCategories();
@@ -190,14 +202,14 @@ function EditService() {
 
       // 2. Fallback: If service_type exists, fetch from existing services (only if current category_order is empty)
       if (formData.service_type && !formData.category_order) {
-        const { data } = await supabase
-          .from("services")
-          .select("category_order")
-          .eq("service_type", formData.service_type)
-          .limit(1)
-          .single();
-        if (data && data.category_order !== null && data.category_order !== undefined) {
-          setFormData(prev => ({ ...prev, category_order: data.category_order }));
+        try {
+          const servicesList = await getServices({ service_type: formData.service_type });
+          const firstSvc = servicesList && servicesList[0];
+          if (firstSvc && firstSvc.category_order !== null && firstSvc.category_order !== undefined) {
+            setFormData(prev => ({ ...prev, category_order: firstSvc.category_order }));
+          }
+        } catch (err) {
+          console.error("Error fetching category order:", err);
         }
       }
     };
@@ -210,10 +222,12 @@ function EditService() {
   useEffect(() => {
     if (!loading && formData.service_type) {
       const fetchNewAddons = async () => {
-        const { data: addonData } = await supabase
-          .from("add_ons")
-          .select("*")
-          .ilike("service_type", formData.service_type.trim());
+        let addonData = [];
+        try {
+          addonData = await getAddons({ service_type: formData.service_type.trim() });
+        } catch (err) {
+          console.error("Error fetching new addons:", err);
+        }
         
         if (addonData) {
           setAddons(addonData.map(a => ({
@@ -293,26 +307,18 @@ function EditService() {
     }
 
     const proceedWithUpdate = async () => {
-      // Upload images to category-icons bucket under main/{service_type_title_case}/
-      const folderPath = `category_icons`;
-
       let mainImageUrl = formData.image;
       if (mainImageFile) {
-        const fileExt = mainImageFile.name.split(".").pop();
-        const fileName = `${folderPath}/main_${Date.now()}.${fileExt}`;
-        const { error: uploadError } = await supabase.storage
-          .from("category-icons")
-          .upload(fileName, mainImageFile, { upsert: true });
-        if (uploadError) {
+        try {
+          const uploadRes = await uploadCatalogImage(mainImageFile, "category-icons", "category_icons");
+          mainImageUrl = uploadRes.public_url;
+        } catch (uploadError) {
           console.error("Main image upload failed:", uploadError);
           setLoading(false);
           return;
         }
-        const { data: publicUrlData } = supabase.storage.from("category-icons").getPublicUrl(fileName);
-        mainImageUrl = publicUrlData.publicUrl;
       }
 
-      // Upload gallery images if new files were chosen
       let galleryUrls = formData.gallery_images
         ? formData.gallery_images.split(",").map((img) => img.trim())
         : [];
@@ -320,35 +326,27 @@ function EditService() {
         galleryUrls = [];
         for (let i = 0; i < galleryImageFiles.length; i++) {
           const file = galleryImageFiles[i];
-          const fileExt = file.name.split(".").pop();
-          const fileName = `${folderPath}/gallery_${Date.now()}_${i}.${fileExt}`;
-          const { error: uploadError } = await supabase.storage
-            .from("category-icons")
-            .upload(fileName, file, { upsert: true });
-          if (uploadError) {
+          try {
+            const uploadRes = await uploadCatalogImage(file, "category-icons", "category_icons");
+            galleryUrls.push(uploadRes.public_url);
+          } catch (uploadError) {
             console.error("Gallery image upload failed:", uploadError);
             setLoading(false);
             return;
           }
-          const { data: publicUrlData } = supabase.storage.from("category-icons").getPublicUrl(fileName);
-          galleryUrls.push(publicUrlData.publicUrl);
         }
       }
 
       let categoryIconUrl = formData.category_icon_url;
       if (categoryIconFile) {
-        const fileExt = categoryIconFile.name.split(".").pop();
-        const fileName = `${folderPath}/category_icon_${Date.now()}.${fileExt}`;
-        const { error: uploadError } = await supabase.storage
-          .from("category-icons")
-          .upload(fileName, categoryIconFile, { upsert: true });
-        if (uploadError) {
+        try {
+          const uploadRes = await uploadCatalogImage(categoryIconFile, "category-icons", "category_icons");
+          categoryIconUrl = uploadRes.public_url;
+        } catch (uploadError) {
           console.error("Category icon upload failed:", uploadError);
           setLoading(false);
           return;
         }
-        const { data: publicUrlData } = supabase.storage.from("category-icons").getPublicUrl(fileName);
-        categoryIconUrl = publicUrlData.publicUrl;
       }
 
       const payload = {
@@ -357,15 +355,12 @@ function EditService() {
         duration: formData.duration,
         price: formData.price,
         original_price: formData.original_price,
-
         partial_payment_enabled: formData.partial_payment_enabled,
-
         partial_payment_amount:
           formData.partial_payment_enabled &&
           formData.partial_payment_amount !== ""
             ? Number(formData.partial_payment_amount)
             : null,
-
         remaining_payment_amount:
           formData.partial_payment_enabled &&
           formData.remaining_payment_amount !== ""
@@ -385,34 +380,19 @@ function EditService() {
         main_category_id: formData.main_category_id || null,
         category_icon_url: categoryIconUrl,
         gallery_images: galleryUrls,
+        addons: addons || [],
       };
 
-      const { error: updateError } = await supabase.from("services").update(payload).eq("id", id);
-      if (updateError) {
+      try {
+        await updateServiceApi(id, payload);
+        setShowAlert(true);
+        setUpdated(true);
+        setLoading(false);
+      } catch (updateError) {
         console.error("Update error:", updateError);
         alert("Update error: " + updateError.message);
         setLoading(false);
-        return;
       }
-
-      // Update addons
-      if (addons.length > 0) {
-        for (const addon of addons) {
-          await supabase
-            .from("add_ons")
-            .update({
-              title: addon.title,
-              is_active: addon.is_active === "TRUE",
-              price: addon.price,
-              duration: addon.duration,
-            })
-            .eq("id", addon.id);
-        }
-      }
-
-      setShowAlert(true);
-      setUpdated(true);
-      setLoading(false);
     };
 
     // Helper to validate a single file

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { supabase } from "../supabase";
+import categoryHubApi from "../api/categoryHubApi";
 
 function CategoryHubCounts() {
   const [activeSubTab, setActiveSubTab] = useState("hub_locations");
@@ -66,21 +66,12 @@ function CategoryHubCounts() {
 
   // ===== FETCH FUNCTIONS =====
 
-  // 1. Fetch Hubs & Locations from hub_locations table
+  // 1. Fetch Hubs & Locations from FastAPI backend
   const fetchHubsAndLocations = async () => {
     setLoadingHubs(true);
     try {
-      const { data, error } = await supabase
-        .from("hub_locations")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        console.warn("Notice: hub_locations table error or not created yet:", error.message);
-        setHubsList([]);
-      } else if (data) {
-        setHubsList(data);
-      }
+      const data = await categoryHubApi.getAllHubLocations();
+      setHubsList(data || []);
     } catch (err) {
       console.error("Failed to fetch hubs and locations:", err);
       setHubsList([]);
@@ -89,71 +80,32 @@ function CategoryHubCounts() {
     }
   };
 
-  // 2. Fetch unique categories from services table
+  // 2. Fetch unique categories from services via FastAPI backend
   const fetchCategories = async () => {
     try {
-      const { data, error } = await supabase
-        .from("services")
-        .select("service_type");
-
-      if (error) {
-        console.error("Error fetching service categories:", error);
-        return;
-      }
-
-      if (data) {
-        const uniqueTypes = [
-          ...new Set(
-            data
-              .map((item) => item.service_type?.trim())
-              .filter(Boolean)
-          ),
-        ].sort();
-        setCategories(uniqueTypes);
-      }
+      const categoriesData = await categoryHubApi.getAvailableCategories();
+      setCategories(categoriesData || []);
     } catch (err) {
       console.error("Failed to fetch categories:", err);
     }
   };
 
-  // 3. Fetch staff and partner profiles
+  // 3. Fetch staff and partner profiles via FastAPI backend
   const fetchStaff = async () => {
     try {
-      let combined = [];
-      const { data: staffData } = await supabase.from("staff_profile").select("*");
-      if (staffData && staffData.length > 0) {
-        combined = [...staffData];
-      }
-      const { data: profilesData } = await supabase.from("profiles").select("*");
-      if (profilesData && profilesData.length > 0) {
-        profilesData.forEach((p) => {
-          const email = p.email || p.staff_email || p.user_email;
-          if (email && !combined.some((c) => (c.email || c.staff_email || c.user_email) === email)) {
-            combined.push(p);
-          }
-        });
-      }
-      setStaffList(combined);
+      const staffData = await categoryHubApi.getAvailableStaff();
+      setStaffList(staffData || []);
     } catch (err) {
       console.error("Failed to fetch staff/partner profiles:", err);
     }
   };
 
-  // 4. Fetch saved records from hub_category_counts table
+  // 4. Fetch saved records from FastAPI backend
   const fetchRecords = async () => {
     setLoadingRecords(true);
     try {
-      const { data, error } = await supabase
-        .from("hub_category_counts")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        console.warn("Notice: hub_category_counts table error or not created yet:", error.message);
-        setRecords([]);
-      } else if (data) {
-        setRecords(data);
-      }
+      const data = await categoryHubApi.getAllCategoryHubCounts();
+      setRecords(data || []);
     } catch (err) {
       console.error("Failed to fetch count records:", err);
       setRecords([]);
@@ -185,50 +137,25 @@ function CategoryHubCounts() {
     setSavingHub(true);
 
     try {
+      const payload = {
+        hub_name: inputHubName.trim(),
+        location_name: inputLocationName.trim(),
+        pincode: inputPincode.trim(),
+        is_active: inputIsActive,
+      };
+
       if (editingHubId) {
-        const { error } = await supabase
-          .from("hub_locations")
-          .update({
-            hub_name: inputHubName.trim(),
-            location_name: inputLocationName.trim(),
-            pincode: inputPincode.trim(),
-            is_active: inputIsActive,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", editingHubId);
-
-        if (error) {
-          triggerModal("Error Saving", error.message || "Failed to update Hub Location.");
-        } else {
-          triggerModal("Success", "Hub Location updated successfully.");
-          resetHubForm();
-          fetchHubsAndLocations();
-        }
+        await categoryHubApi.updateHubLocation(editingHubId, payload);
+        triggerModal("Success", "Hub Location updated successfully.");
       } else {
-        const { error } = await supabase.from("hub_locations").insert([
-          {
-            hub_name: inputHubName.trim(),
-            location_name: inputLocationName.trim(),
-            pincode: inputPincode.trim(),
-            is_active: inputIsActive,
-            created_at: new Date().toISOString(),
-          },
-        ]);
-
-        if (error) {
-          triggerModal(
-            "Database Notice",
-            error.message || "Failed to save Hub Location. Ensure 'hub_locations' table exists in Supabase."
-          );
-        } else {
-          triggerModal("Success", "Hub Location saved successfully!");
-          resetHubForm();
-          fetchHubsAndLocations();
-        }
+        await categoryHubApi.createHubLocation(payload);
+        triggerModal("Success", "Hub Location saved successfully!");
       }
+      resetHubForm();
+      fetchHubsAndLocations();
     } catch (err) {
       console.error("Hub save error:", err);
-      triggerModal("Error", "An unexpected error occurred while saving.");
+      triggerModal("Error Saving", err.message || "Failed to save Hub Location.");
     } finally {
       setSavingHub(false);
     }
@@ -255,20 +182,12 @@ function CategoryHubCounts() {
   const confirmDeleteHub = async (id) => {
     setDeleteConfirmItem(null);
     try {
-      const { error } = await supabase
-        .from("hub_locations")
-        .delete()
-        .eq("id", id);
-
-      if (error) {
-        triggerModal("Delete Error", error.message || "Failed to delete Hub Location.");
-      } else {
-        triggerModal("Deleted", "Hub Location deleted successfully.");
-        fetchHubsAndLocations();
-      }
+      await categoryHubApi.deleteHubLocation(id);
+      triggerModal("Deleted", "Hub Location deleted successfully.");
+      fetchHubsAndLocations();
     } catch (err) {
       console.error("Delete error:", err);
-      triggerModal("Error", "Failed to delete Hub Location.");
+      triggerModal("Delete Error", err.message || "Failed to delete Hub Location.");
     }
   };
 
@@ -352,55 +271,29 @@ function CategoryHubCounts() {
     const staffString = selectedStaffEmails.filter(Boolean).join(", ");
 
     try {
+      const payload = {
+        hub: hubName,
+        location: locationString,
+        category: selectedCategory,
+        count: countNum,
+        assigned_staff: staffString,
+      };
+
       if (editingCountId) {
-        const { error } = await supabase
-          .from("hub_category_counts")
-          .update({
-            hub: hubName,
-            location: locationString,
-            category: selectedCategory,
-            count: countNum,
-            assigned_staff: staffString,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", editingCountId);
-
-        if (error) {
-          triggerModal("Error Saving", error.message || "Failed to update record in Supabase.");
-        } else {
-          triggerModal("Success", "Category Count record updated successfully.");
-          resetCountForm();
-          fetchRecords();
-        }
+        await categoryHubApi.updateCategoryHubCount(editingCountId, payload);
+        triggerModal("Success", "Category Count record updated successfully.");
       } else {
-        const singleRecord = {
-          hub: hubName,
-          location: locationString,
-          category: selectedCategory,
-          count: countNum,
-          assigned_staff: staffString,
-          created_at: new Date().toISOString(),
-        };
-
-        const { error } = await supabase.from("hub_category_counts").insert([singleRecord]);
-
-        if (error) {
-          triggerModal(
-            "Notice",
-            error.message || "Could not save to Supabase table. Ensure 'hub_category_counts' table exists."
-          );
-        } else {
-          triggerModal(
-            "Success",
-            `Saved Category, Count & Staff for ${hubName} successfully!`
-          );
-          resetCountForm();
-          fetchRecords();
-        }
+        await categoryHubApi.createCategoryHubCount(payload);
+        triggerModal(
+          "Success",
+          `Saved Category, Count & Staff for ${hubName} successfully!`
+        );
       }
+      resetCountForm();
+      fetchRecords();
     } catch (err) {
       console.error("Save error:", err);
-      triggerModal("Error", "An unexpected error occurred while saving.");
+      triggerModal("Error Saving", err.message || "An unexpected error occurred while saving.");
     } finally {
       setSavingCountRecord(false);
     }
@@ -437,20 +330,12 @@ function CategoryHubCounts() {
   const confirmDeleteCountRecord = async (id) => {
     setDeleteConfirmItem(null);
     try {
-      const { error } = await supabase
-        .from("hub_category_counts")
-        .delete()
-        .eq("id", id);
-
-      if (error) {
-        triggerModal("Delete Error", error.message || "Failed to delete record.");
-      } else {
-        triggerModal("Deleted", "Record deleted successfully.");
-        fetchRecords();
-      }
+      await categoryHubApi.deleteCategoryHubCount(id);
+      triggerModal("Deleted", "Record deleted successfully.");
+      fetchRecords();
     } catch (err) {
       console.error("Delete error:", err);
-      triggerModal("Error", "Failed to delete record.");
+      triggerModal("Delete Error", err.message || "Failed to delete record.");
     }
   };
 

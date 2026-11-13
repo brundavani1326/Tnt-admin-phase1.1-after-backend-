@@ -5,7 +5,7 @@ import {
   Route,
   Navigate,
 } from "react-router-dom";
-import { supabase } from "./supabase";
+import apiClient from "./api/apiClient";
 import Loader from "./components/Loader";
 import AddOn from "./components/AddOn";
 import StaffCancellationAlert from "./components/StaffCancellationAlert";
@@ -27,10 +27,9 @@ function ProtectedRoute({ children }) {
   useEffect(() => {
     const checkAuth = async () => {
       try {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        setIsAuthenticated(!!session);
+        // Authorize with FastAPI Admin Backend
+        const adminUser = await apiClient.getCurrentAdmin();
+        setIsAuthenticated(!!adminUser);
       } catch (err) {
         console.error("Auth check failed:", err);
         setIsAuthenticated(false);

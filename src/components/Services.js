@@ -1,6 +1,16 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../supabase";
+
+import {
+  getCategories,
+  getServices,
+  getServiceTypes,
+  getAddons,
+  deleteCategory,
+  deleteService as deleteServiceApi,
+  deleteAddon,
+} from "../api/catalogApi";
 import AddService from "./AddService";
 import AddOn from "./AddOn";
 import AddMainCategory from "./AddMainCategory";
@@ -34,30 +44,16 @@ function Services() {
     try {
       if (selectedType === "ADD ON") {
         setIsAddOnMode(true);
-
-        const { data } = await supabase
-          .from("add_ons")
-          .select("*")
-          .order("sort_order", { ascending: true });
-
+        const data = await getAddons({ sort_by: "sort_order", sort_order: "asc" });
         setServices(data || []);
       } else {
         setIsAddOnMode(false);
-
-        let query = supabase
-          .from("services")
-          .select("*")
-          .order("sort_order", { ascending: true });
-
-        if (selectedType !== "ALL") {
-          query = query.eq("service_type", selectedType);
-        }
-
-        if (selectedMainCategory !== "ALL") {
-          query = query.eq("main_category_id", selectedMainCategory);
-        }
-
-        const { data } = await query;
+        const data = await getServices({
+          service_type: selectedType,
+          main_category_id: selectedMainCategory,
+          sort_by: "sort_order",
+          sort_order: "asc",
+        });
         setServices(data || []);
       }
     } catch (err) {
@@ -71,35 +67,22 @@ function Services() {
   // FETCH SERVICE TYPES
   // ===========================
   const fetchServiceTypes = useCallback(async () => {
-    // Fetch unique service types ordered by category_order then sort_order
-    let query = supabase.from("services")
-      .select("service_type, category_order, sort_order")
-      .order("category_order", { ascending: true })
-      .order("sort_order", { ascending: true });
-    
-    if (selectedMainCategory !== "ALL") {
-      query = query.eq("main_category_id", selectedMainCategory);
+    try {
+      const types = await getServiceTypes(selectedMainCategory);
+      setServiceTypes(types || ["ALL", "NONE", "ADD ON"]);
+    } catch (err) {
+      console.error("Error fetching service types:", err);
+      setServiceTypes(["ALL", "NONE", "ADD ON"]);
     }
-
-    const { data } = await query;
-
-    const uniqueTypes = [
-      "ALL",
-      "NONE",
-      ...new Set((data || []).map((d) => d.service_type)),
-      "ADD ON",
-    ];
-
-    setServiceTypes(uniqueTypes);
   }, [selectedMainCategory]);
 
   const fetchMainCategories = async () => {
-    const { data } = await supabase
-      .from("main_categories")
-      .select("id, name, icon_url, sort_order")
-      .order("sort_order", { ascending: true });
-    
-    setMainCategories(data || []);
+    try {
+      const data = await getCategories({ sort_by: "sort_order", sort_order: "asc" });
+      setMainCategories(data || []);
+    } catch (err) {
+      console.error("Error fetching main categories:", err);
+    }
   };
 
   useEffect(() => {
@@ -164,34 +147,33 @@ function Services() {
   const confirmDelete = async () => {
     try {
       if (deleteType === "main_category") {
-        const { error } = await supabase
-          .from("main_categories")
-          .delete()
-          .eq("id", deleteId);
-        if (error) {
-          console.error("Error deleting main category:", error);
-          alert(error.message); // Inform the user in case of foreign key constraint errors
-        } else {
+        try {
+          await deleteCategory(deleteId);
           if (selectedMainCategory === deleteId) {
             setSelectedMainCategory("ALL");
             setSelectedType("ALL");
           }
           fetchMainCategories();
+        } catch (err) {
+          console.error("Error deleting main category:", err);
+          alert(err.message || "Failed to delete category");
         }
       } else if (deleteType === "addon") {
-        const { error } = await supabase
-          .from("add_ons")
-          .delete()
-          .eq("id", deleteId);
-        if (error) console.error("Error deleting addon:", error);
-        fetchServices();
+        try {
+          await deleteAddon(deleteId);
+          fetchServices();
+        } catch (err) {
+          console.error("Error deleting addon:", err);
+          alert(err.message || "Failed to delete addon");
+        }
       } else {
-        const { error } = await supabase
-          .from("services")
-          .delete()
-          .eq("id", deleteId);
-        if (error) console.error("Error deleting service:", error);
-        fetchServices();
+        try {
+          await deleteServiceApi(deleteId);
+          fetchServices();
+        } catch (err) {
+          console.error("Error deleting service:", err);
+          alert(err.message || "Failed to delete service");
+        }
       }
     } catch (err) {
       console.error(err);

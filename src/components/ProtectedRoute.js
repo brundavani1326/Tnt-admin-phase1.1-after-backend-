@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
-import { supabase } from "../supabase";
+import apiClient from "../api/apiClient";
 import Loader from "./Loader";
 
 function ProtectedRoute({ children }) {
@@ -9,9 +9,15 @@ function ProtectedRoute({ children }) {
 
   useEffect(() => {
     const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      setIsAuth(!!session);
-      setLoading(false);
+      try {
+        const adminUser = await apiClient.getCurrentAdmin();
+        setIsAuth(!!adminUser);
+      } catch (err) {
+        console.error("Auth check failed:", err);
+        setIsAuth(false);
+      } finally {
+        setLoading(false);
+      }
     };
     checkAuth();
   }, []);

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { supabase, isSupabaseConfigured } from "../supabase";
+import { isSupabaseConfigured } from "../supabase";
+import apiClient from "../api/apiClient";
 import logo from "../neatifylogo.png";
 import Loader from "./Loader";
 
@@ -14,13 +15,9 @@ function Login() {
 
   useEffect(() => {
     const checkSession = async () => {
-      if (!isSupabaseConfigured) return;
       try {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-
-        if (session) {
+        const adminUser = await apiClient.getCurrentAdmin();
+        if (adminUser) {
           navigate("/dashboard");
         }
       } catch (err) {
@@ -32,43 +29,35 @@ function Login() {
   }, [navigate]);
 
   const handleLogin = async () => {
+    if (!email || !password) {
+      setErrorMessage("Please enter both email and password");
+      return;
+    }
+
     setLoading(true);
     setErrorMessage("");
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      // 🚀 Authenticate through FastAPI Admin Backend
+      // This validates credentials and verifies admin_profile membership on the backend.
+      // apiClient.login also synchronizes the Supabase client SDK session.
+      await apiClient.login(email, password);
 
-      if (error) {
-        setErrorMessage("Invalid email or password");
-        setLoading(false);
-        return;
-      }
-
-      const userId = data.user.id;
-
-      // 🔒 Check if logged user is admin
-      const { data: adminData } = await supabase
-        .from("admin_profile")
-        .select("id")
-        .eq("id", userId)
-        .maybeSingle();
-
-      if (!adminData) {
-        setErrorMessage("You are not authorized to access the Admin Dashboard");
-        await supabase.auth.signOut();
-        setLoading(false);
-        return;
-      }
-
-      // ✅ Only admin reaches dashboard
+      // ✅ Only verified admin reaches dashboard
       navigate("/dashboard");
-
     } catch (err) {
-      console.error(err);
-      setErrorMessage("Something went wrong. Please try again.");
+      console.error("Login failed:", err);
+      if (err.status === 401) {
+        setErrorMessage("Invalid email or password");
+      } else if (err.status === 403) {
+        setErrorMessage(
+          err.message || "You are not authorized to access the Admin Dashboard"
+        );
+      } else {
+        setErrorMessage(
+          err.message || "Something went wrong. Please try again."
+        );
+      }
       setLoading(false);
     }
   };

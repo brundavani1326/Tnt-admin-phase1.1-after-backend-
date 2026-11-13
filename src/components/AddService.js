@@ -1,6 +1,12 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "../supabase";
+
+import {
+  getCategories,
+  getServices,
+  createService,
+  uploadCatalogImage,
+} from "../api/catalogApi";
 import Loader from "./Loader";
 
 function AddService({ onSuccess, onBack }) {
@@ -40,12 +46,13 @@ function AddService({ onSuccess, onBack }) {
 
   useEffect(() => {
     const fetchMainCategories = async () => {
-      const { data, error } = await supabase
-        .from("main_categories")
-        .select("id, name, sort_order")
-        .order("sort_order", { ascending: true });
-      if (!error && data) {
-        setMainCategories(data);
+      try {
+        const data = await getCategories({ sort_by: "sort_order", sort_order: "asc" });
+        if (data) {
+          setMainCategories(data);
+        }
+      } catch (err) {
+        console.error("Error fetching main categories:", err);
       }
     };
     fetchMainCategories();
@@ -65,15 +72,15 @@ function AddService({ onSuccess, onBack }) {
 
       // 2. Fallback: If service_type exists, fetch from existing services
       if (formData.service_type) {
-        const { data } = await supabase
-          .from("services")
-          .select("category_order")
-          .eq("service_type", formData.service_type)
-          .limit(1)
-          .single();
-        if (data && data.category_order !== null && data.category_order !== undefined) {
-          setCategoryOrder(data.category_order);
-          return;
+        try {
+          const servicesList = await getServices({ service_type: formData.service_type });
+          const firstSvc = servicesList && servicesList[0];
+          if (firstSvc && firstSvc.category_order !== null && firstSvc.category_order !== undefined) {
+            setCategoryOrder(firstSvc.category_order);
+            return;
+          }
+        } catch (err) {
+          console.error("Error fetching category order:", err);
         }
       }
 
@@ -220,81 +227,46 @@ function AddService({ onSuccess, onBack }) {
 
     setLoading(true);
 
-    // 1. If sort_order is provided, we need to shift existing ones down
-    if (pendingPayload.sort_order !== null) {
-      // Find all services with same type and sort_order >= the new one
-      const { data: existingToShift } = await supabase
-        .from("services")
-        .select("id, sort_order")
-        .eq("service_type", pendingPayload.service_type)
-        .gte("sort_order", pendingPayload.sort_order);
-
-      // Increment their sort_order by 1
-      if (existingToShift && existingToShift.length > 0) {
-        for (const service of existingToShift) {
-          await supabase
-            .from("services")
-            .update({ sort_order: service.sort_order + 1 })
-            .eq("id", service.id);
-        }
-      }
-    }
-
-    // 2. Upload images to category-icons bucket under main/{service_type_title_case}/
-    const folderPath = `category_icons`;
-
     let mainImageUrl = "";
     if (mainImageFile) {
-      const fileExt = mainImageFile.name.split(".").pop();
-      const fileName = `${folderPath}/main_${Date.now()}.${fileExt}`;
-      const { error: uploadError } = await supabase.storage
-        .from("category-icons")
-        .upload(fileName, mainImageFile);
-      if (uploadError) {
+      try {
+        const uploadRes = await uploadCatalogImage(mainImageFile, "category-icons", "category_icons");
+        mainImageUrl = uploadRes.public_url;
+      } catch (uploadError) {
         setInsertError("Main image upload failed: " + uploadError.message);
         setLoading(false);
         return;
       }
-      const { data: publicUrlData } = supabase.storage.from("category-icons").getPublicUrl(fileName);
-      mainImageUrl = publicUrlData.publicUrl;
     }
 
     let galleryUrls = [];
     if (galleryImageFiles.length > 0) {
       for (let i = 0; i < galleryImageFiles.length; i++) {
         const file = galleryImageFiles[i];
-        const fileExt = file.name.split(".").pop();
-        const fileName = `${folderPath}/gallery_${Date.now()}_${i}.${fileExt}`;
-        const { error: uploadError } = await supabase.storage
-          .from("category-icons")
-          .upload(fileName, file);
-        if (uploadError) {
+        try {
+          const uploadRes = await uploadCatalogImage(file, "category-icons", "category_icons");
+          galleryUrls.push(uploadRes.public_url);
+        } catch (uploadError) {
           setInsertError("Gallery image upload failed: " + uploadError.message);
           setLoading(false);
           return;
         }
-        const { data: publicUrlData } = supabase.storage.from("category-icons").getPublicUrl(fileName);
-        galleryUrls.push(publicUrlData.publicUrl);
       }
     }
 
     let categoryIconUrl = "";
     if (categoryIconFile) {
-      const fileExt = categoryIconFile.name.split(".").pop();
-      const fileName = `${folderPath}/category_icon_${Date.now()}.${fileExt}`;
-      const { error: uploadError } = await supabase.storage
-        .from("category-icons")
-        .upload(fileName, categoryIconFile);
-      if (uploadError) {
+      try {
+        const uploadRes = await uploadCatalogImage(categoryIconFile, "category-icons", "category_icons");
+        categoryIconUrl = uploadRes.public_url;
+      } catch (uploadError) {
         setInsertError("Category icon upload failed: " + uploadError.message);
         setLoading(false);
         return;
       }
-      const { data: publicUrlData } = supabase.storage.from("category-icons").getPublicUrl(fileName);
-      categoryIconUrl = publicUrlData.publicUrl;
     }
 
-    // 3. Insert the new service
+    // 3. Insert the new service via FastAPI (backend handles sort_order shift automatically)
     const finalPayload = {
       ...pendingPayload,
       image: mainImageUrl,
@@ -302,15 +274,15 @@ function AddService({ onSuccess, onBack }) {
       category_icon_url: categoryIconUrl
     };
 
-    const { error } = await supabase.from("services").insert([finalPayload]);
-    if (!error) {
+    try {
+      await createService(finalPayload);
       setShowAlert(false);
       setPendingPayload(null);
       setLoading(false);
       onSuccess();
-    } else {
-      console.error("Insert error:", error);
-      setInsertError(error.message || "Failed to save. Check column names/types.");
+    } catch (err) {
+      console.error("Insert error:", err);
+      setInsertError(err.message || "Failed to save. Check column names/types.");
       setLoading(false);
     }
   };

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { supabase } from "../supabase";
+
+import { getAddon, updateAddon, uploadCatalogImage } from "../api/catalogApi";
 import Loader from "./Loader";
 
 function EditAddOn() {
@@ -33,13 +34,14 @@ function EditAddOn() {
 
   const fetchAddOn = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("add_ons")
-      .select("*")
-      .eq("id", id)
-      .single();
+    let data = null;
+    try {
+      data = await getAddon(id);
+    } catch (err) {
+      console.error("Error fetching add-on:", err);
+    }
 
-    if (data && !error) {
+    if (data) {
       setFormData({
         title: data.title || "",
         duration: data.duration || "",
@@ -105,27 +107,21 @@ function EditAddOn() {
   // 🟡 ACTUAL UPDATE
   const confirmUpdate = async () => {
     setLoading(true);
-    // Upload new image if file selected
     let imageUrl = formData.image;
     if (imageFile) {
-      const fileExt = imageFile.name.split(".").pop();
-      const fileName = `addon_${Date.now()}.${fileExt}`;
-      const { error: uploadError } = await supabase.storage
-        .from("avatars")
-        .upload(fileName, imageFile, { upsert: true });
-      if (uploadError) {
+      try {
+        const uploadRes = await uploadCatalogImage(imageFile, "avatars", "addon_images");
+        imageUrl = uploadRes.public_url;
+      } catch (uploadError) {
         console.error("Image upload failed:", uploadError);
         setShowConfirm(false);
         setLoading(false);
         return;
       }
-      const { data: publicUrlData } = supabase.storage.from("avatars").getPublicUrl(fileName);
-      imageUrl = publicUrlData.publicUrl;
     }
 
-    const { error } = await supabase
-      .from("add_ons")
-      .update({
+    try {
+      await updateAddon(id, {
         title: formData.title.trim(),
         duration: formData.duration ? parseInt(formData.duration) : null,
         price: formData.price,
@@ -141,16 +137,16 @@ function EditAddOn() {
         max_quantity: formData.max_quantity ? parseInt(formData.max_quantity) : null,
         is_active: formData.is_active,
         service_type: formData.service_type,
-      })
-      .eq("id", id);
+      });
 
-    setShowConfirm(false);
-    setLoading(false);
-
-    if (!error) {
+      setShowConfirm(false);
+      setLoading(false);
       setShowSuccess(true);
-    } else {
-      console.error("Update Error:", error);
+    } catch (err) {
+      console.error("Update Error:", err);
+      setShowConfirm(false);
+      setLoading(false);
+      alert(err.message || "Failed to update add-on");
     }
   };
 

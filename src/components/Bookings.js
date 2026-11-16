@@ -483,7 +483,7 @@ const getBookingPaymentDetails = (b, paymentsMap = {}) => {
     try {
       const parsed = JSON.parse(b.services);
       if (Array.isArray(parsed) && parsed.length > 0) svc = parsed[0];
-    } catch (e) {}
+    } catch (e) { }
   }
 
   const payments = (
@@ -612,7 +612,7 @@ const isPartialPaymentService = (b, allServices = [], paymentsMap = {}) => {
       const parsed = JSON.parse(b.services);
       if (Array.isArray(parsed)) svcs = parsed;
       else if (parsed && typeof parsed === "object") svcs = [parsed];
-    } catch (e) {}
+    } catch (e) { }
   } else if (b.services && typeof b.services === "object") {
     svcs = [b.services];
   }
@@ -649,7 +649,7 @@ const isPartialPaymentService = (b, allServices = [], paymentsMap = {}) => {
           (svcTitle &&
             s.title &&
             String(s.title).trim().toLowerCase() ===
-              String(svcTitle).trim().toLowerCase())
+            String(svcTitle).trim().toLowerCase())
       );
 
       if (matchedSvc) {
@@ -685,8 +685,8 @@ const renderPaymentCells = (b, paymentsMap = {}, services = []) => {
     b?.total_amount !== undefined && b?.total_amount !== null
       ? b.total_amount
       : b?.price !== undefined && b?.price !== null
-      ? b.price
-      : null;
+        ? b.price
+        : null;
   const finalPriceDisplay = finalPriceVal !== null ? `₹${finalPriceVal}` : "N/A";
 
   const { advanceAmount, pendingAmount } = getBookingPaymentDetails(b, paymentsMap);
@@ -788,10 +788,10 @@ function BookingPage() {
   const [dutyLogsLoading, setDutyLogsLoading] = useState(false);
 
   // Customer Checklist states
- const [customerChecklists, setCustomerChecklists] = useState([]);
-const [showChecklistModal, setShowChecklistModal] = useState(false);
-const [selectedChecklistTasks, setSelectedChecklistTasks] = useState([]);
-const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
+  const [customerChecklists, setCustomerChecklists] = useState([]);
+  const [showChecklistModal, setShowChecklistModal] = useState(false);
+  const [selectedChecklistTasks, setSelectedChecklistTasks] = useState([]);
+  const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
 
   const formatMinutesToHoursStr = (mins) => {
     const totalMins = parseInt(mins || 0, 10);
@@ -892,93 +892,93 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
     setShowChecklistModal(true);
   };
   const handleCloseManualChecklist = async (bookingId) => {
-  if (!bookingId) return;
+    if (!bookingId) return;
 
-  const confirmClose = window.confirm(
-    "Are you sure you want to close this manual booking checklist?"
-  );
-
-  if (!confirmClose) return;
-
-  try {
-    const { error } = await supabase
-      .from("booking_checklists")
-      .update({
-        manual_admin_completed: true,
-      })
-      .eq("booking_id", bookingId);
-
-    if (error) {
-      console.error(
-        "Failed to close manual checklist:",
-        error
-      );
-
-      triggerModal(
-        "Error",
-        "Could not close the checklist."
-      );
-
-      return;
-    }
-
-    const { data: updatedBooking, error: bookingError } =
-      await supabase
-        .from("bookings")
-        .update({
-          checklist_submitted: true,
-        })
-        .eq("id", bookingId)
-        .select("*")
-        .maybeSingle();
-
-    if (bookingError) {
-      console.error(
-        "MANUAL BOOKING STATUS UPDATE ERROR:",
-        bookingError
-      );
-
-      triggerModal(
-        "Booking Update Failed",
-        bookingError.message ||
-          "The manual checklist was closed, but the booking could not be changed to COMPLETED."
-      );
-      return;
-    }
-
-    if (!updatedBooking) {
-      console.error(
-        "MANUAL BOOKING STATUS UPDATE RETURNED NO ROW:",
-        bookingId
-      );
-
-      triggerModal(
-        "Booking Update Failed",
-        "The manual checklist was closed, but the booking was not updated. Please check the booking ID and current work status."
-      );
-      return;
-    }
-
-    console.log(
-      "MANUAL BOOKING CHECKLIST SUBMITTED:",
-      updatedBooking
+    const confirmClose = window.confirm(
+      "Are you sure you want to close this manual booking checklist?"
     );
 
-    setBookings((prev) =>
-      prev.map((booking) =>
-        String(booking.id) === String(bookingId)
-          ? {
+    if (!confirmClose) return;
+
+    try {
+      const { error } = await supabase
+        .from("booking_checklists")
+        .update({
+          manual_admin_completed: true,
+        })
+        .eq("booking_id", bookingId);
+
+      if (error) {
+        console.error(
+          "Failed to close manual checklist:",
+          error
+        );
+
+        triggerModal(
+          "Error",
+          "Could not close the checklist."
+        );
+
+        return;
+      }
+
+      const { data: updatedBooking, error: bookingError } =
+        await supabase
+          .from("bookings")
+          .update({
+            checklist_submitted: true,
+          })
+          .eq("id", bookingId)
+          .select("*")
+          .maybeSingle();
+
+      if (bookingError) {
+        console.error(
+          "MANUAL BOOKING STATUS UPDATE ERROR:",
+          bookingError
+        );
+
+        triggerModal(
+          "Booking Update Failed",
+          bookingError.message ||
+          "The manual checklist was closed, but the booking could not be changed to COMPLETED."
+        );
+        return;
+      }
+
+      if (!updatedBooking) {
+        console.error(
+          "MANUAL BOOKING STATUS UPDATE RETURNED NO ROW:",
+          bookingId
+        );
+
+        triggerModal(
+          "Booking Update Failed",
+          "The manual checklist was closed, but the booking was not updated. Please check the booking ID and current work status."
+        );
+        return;
+      }
+
+      console.log(
+        "MANUAL BOOKING CHECKLIST SUBMITTED:",
+        updatedBooking
+      );
+
+      setBookings((prev) =>
+        prev.map((booking) =>
+          String(booking.id) === String(bookingId)
+            ? {
               ...booking,
               ...updatedBooking,
               checklist_submitted: true,
             }
-          : booking
-      )
-    );
+            : booking
+        )
+      );
 
-    setSelectedChecklistBooking((prev) =>
-      prev
-        ? {
+      setSelectedChecklistBooking((prev) =>
+        prev
+          ? {
             ...prev,
             bookings: {
               ...prev.bookings,
@@ -986,47 +986,47 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
               checklist_submitted: true,
             },
           }
-        : prev
-    );
+          : prev
+      );
 
-    triggerModal(
-      "Checklist Submitted",
-      "The checklist has been submitted successfully. Ask the partner to complete the service."
-    );
+      triggerModal(
+        "Checklist Submitted",
+        "The checklist has been submitted successfully. Ask the partner to complete the service."
+      );
 
-    setSelectedChecklistTasks((prev) =>
-      prev.map((task) => ({
-        ...task,
-        manual_admin_completed: true,
-      }))
-    );
+      setSelectedChecklistTasks((prev) =>
+        prev.map((task) => ({
+          ...task,
+          manual_admin_completed: true,
+        }))
+      );
 
-    setCustomerChecklists((prev) =>
-      prev.map((cl) =>
-        String(cl.booking_id) === String(bookingId)
-          ? {
+      setCustomerChecklists((prev) =>
+        prev.map((cl) =>
+          String(cl.booking_id) === String(bookingId)
+            ? {
               ...cl,
               tasks: cl.tasks.map((task) => ({
                 ...task,
                 manual_admin_completed: true,
               })),
             }
-          : cl
-      )
-    );
-  } catch (error) {
-    console.error(
-      "Close manual checklist error:",
-      error
-    );
+            : cl
+        )
+      );
+    } catch (error) {
+      console.error(
+        "Close manual checklist error:",
+        error
+      );
 
-    triggerModal(
-      "Error",
-      error?.message ||
+      triggerModal(
+        "Error",
+        error?.message ||
         "Could not close the checklist."
-    );
-  }
-};
+      );
+    }
+  };
 
   const handleChecklistTaskToggle = async (taskIndex) => {
     if (!selectedChecklistBooking?.booking_id) return;
@@ -1040,10 +1040,10 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
     const currentCompleted = isManualBooking
       ? task.manual_admin_completed === true
       : (
-          task.customer_completed === true ||
-          task.customer_completed === "Completed" ||
-          task.customer_completed === "Yes"
-        );
+        task.customer_completed === true ||
+        task.customer_completed === "Completed" ||
+        task.customer_completed === "Yes"
+      );
 
     const nextCompleted = !currentCompleted;
 
@@ -1071,11 +1071,11 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
         prev.map((item, index) =>
           index === taskIndex
             ? {
-                ...item,
-                ...(isManualBooking
-                  ? { manual_admin_completed: nextCompleted }
-                  : { customer_completed: nextCompleted }),
-              }
+              ...item,
+              ...(isManualBooking
+                ? { manual_admin_completed: nextCompleted }
+                : { customer_completed: nextCompleted }),
+            }
             : item
         )
       );
@@ -1083,20 +1083,20 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
       setCustomerChecklists((prev) =>
         prev.map((cl) =>
           String(cl.booking_id) ===
-          String(selectedChecklistBooking.booking_id)
+            String(selectedChecklistBooking.booking_id)
             ? {
-                ...cl,
-                tasks: cl.tasks.map((item, index) =>
-                  index === taskIndex
-                    ? {
-                        ...item,
-                        ...(isManualBooking
-                          ? { manual_admin_completed: nextCompleted }
-                          : { customer_completed: nextCompleted }),
-                      }
-                    : item
-                ),
-              }
+              ...cl,
+              tasks: cl.tasks.map((item, index) =>
+                index === taskIndex
+                  ? {
+                    ...item,
+                    ...(isManualBooking
+                      ? { manual_admin_completed: nextCompleted }
+                      : { customer_completed: nextCompleted }),
+                  }
+                  : item
+              ),
+            }
             : cl
         )
       );
@@ -1193,7 +1193,7 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
         triggerModal(
           "Checklist Submission Failed",
           checklistError.message ||
-            "Could not update the user checklist."
+          "Could not update the user checklist."
         );
         return;
       }
@@ -1227,7 +1227,7 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
         triggerModal(
           "Booking Update Failed",
           bookingError.message ||
-            "The user checklist was updated, but the booking could not be changed to COMPLETED."
+          "The user checklist was updated, but the booking could not be changed to COMPLETED."
         );
         return;
       }
@@ -1269,7 +1269,7 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
         triggerModal(
           "Booking Verification Failed",
           verifyError.message ||
-            "The booking was updated, but the final status could not be verified."
+          "The booking was updated, but the final status could not be verified."
         );
         return;
       }
@@ -1310,9 +1310,9 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
         prev.map((cl) =>
           String(cl.booking_id) === String(bookingId)
             ? {
-                ...cl,
-                tasks: updatedTasks,
-              }
+              ...cl,
+              tasks: updatedTasks,
+            }
             : cl
         )
       );
@@ -1322,11 +1322,11 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
         prev.map((booking) =>
           String(booking.id) === String(bookingId)
             ? {
-                ...booking,
-                ...updatedBooking,
-                checklist_submitted: true,
-                work_status: "COMPLETED",
-              }
+              ...booking,
+              ...updatedBooking,
+              checklist_submitted: true,
+              work_status: "COMPLETED",
+            }
             : booking
         )
       );
@@ -1354,7 +1354,7 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
       triggerModal(
         "Checklist Submission Failed",
         error?.message ||
-          "Could not submit the user checklist."
+        "Could not submit the user checklist."
       );
     }
   };
@@ -1402,35 +1402,35 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
             }}
           >
             <h2
-  style={{
-    margin: 0,
-    fontSize: "20px",
-    fontWeight: "800",
-    color: "#0f172a"
-  }}
->
-  📝 Customer Checklist Tasks
-  <div
-    style={{
-      fontSize: "13px",
-      fontWeight: "600",
-      color: "#64748b",
-      marginTop: "6px"
-    }}
-  >
-    Booking ID: {selectedChecklistBooking?.booking_id || "N/A"}
-    <br />
-    Customer Name: {selectedChecklistBooking?.bookings?.customer_name || selectedChecklistBooking?.customer_name || "N/A"}
-    <br />
-    Customer Number: {selectedChecklistBooking?.bookings?.phone_number || selectedChecklistBooking?.bookings?.user_phone || selectedChecklistBooking?.bookings?.customer_phone || selectedChecklistBooking?.bookings?.phone || selectedChecklistBooking?.phone_number || selectedChecklistBooking?.user_phone || selectedChecklistBooking?.customer_phone || selectedChecklistBooking?.phone || "N/A"}
-    <br />
-    Service: {getMainServiceTitle(selectedChecklistBooking?.bookings || selectedChecklistBooking)}
-    <br />
-    Add-on: {getBookingAddOnsDisplay(selectedChecklistBooking?.bookings || selectedChecklistBooking)}
-    <br />
-    Assigned Staff: {selectedChecklistBooking?.bookings?.assigned_staff_email || "N/A"}
-  </div>
-</h2>
+              style={{
+                margin: 0,
+                fontSize: "20px",
+                fontWeight: "800",
+                color: "#0f172a"
+              }}
+            >
+              📝 Customer Checklist Tasks
+              <div
+                style={{
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  color: "#64748b",
+                  marginTop: "6px"
+                }}
+              >
+                Booking ID: {selectedChecklistBooking?.booking_id || "N/A"}
+                <br />
+                Customer Name: {selectedChecklistBooking?.bookings?.customer_name || selectedChecklistBooking?.customer_name || "N/A"}
+                <br />
+                Customer Number: {selectedChecklistBooking?.bookings?.phone_number || selectedChecklistBooking?.bookings?.user_phone || selectedChecklistBooking?.bookings?.customer_phone || selectedChecklistBooking?.bookings?.phone || selectedChecklistBooking?.phone_number || selectedChecklistBooking?.user_phone || selectedChecklistBooking?.customer_phone || selectedChecklistBooking?.phone || "N/A"}
+                <br />
+                Service: {getMainServiceTitle(selectedChecklistBooking?.bookings || selectedChecklistBooking)}
+                <br />
+                Add-on: {getBookingAddOnsDisplay(selectedChecklistBooking?.bookings || selectedChecklistBooking)}
+                <br />
+                Assigned Staff: {selectedChecklistBooking?.bookings?.assigned_staff_email || "N/A"}
+              </div>
+            </h2>
             <button
               type="button"
               onClick={() => {
@@ -1527,24 +1527,24 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
                 borderRadius: "8px",
                 background:
                   selectedChecklistTasks.length > 0 &&
-                  selectedChecklistTasks.every(
-                    (task) =>
-                      task.customer_completed === true ||
-                      task.customer_completed === "Completed" ||
-                      task.customer_completed === "Yes"
-                  )
+                    selectedChecklistTasks.every(
+                      (task) =>
+                        task.customer_completed === true ||
+                        task.customer_completed === "Completed" ||
+                        task.customer_completed === "Yes"
+                    )
                     ? "#16a34a"
                     : "#94a3b8",
                 color: "#fff",
                 fontWeight: "800",
                 cursor:
                   selectedChecklistTasks.length > 0 &&
-                  selectedChecklistTasks.every(
-                    (task) =>
-                      task.customer_completed === true ||
-                      task.customer_completed === "Completed" ||
-                      task.customer_completed === "Yes"
-                  )
+                    selectedChecklistTasks.every(
+                      (task) =>
+                        task.customer_completed === true ||
+                        task.customer_completed === "Completed" ||
+                        task.customer_completed === "Yes"
+                    )
                     ? "pointer"
                     : "not-allowed",
               }}
@@ -1585,10 +1585,10 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
                 const isCompleted = isManualBooking
                   ? t.manual_admin_completed === true
                   : (
-                      t.customer_completed === true ||
-                      t.customer_completed === "Completed" ||
-                      t.customer_completed === "Yes"
-                    );
+                    t.customer_completed === true ||
+                    t.customer_completed === "Completed" ||
+                    t.customer_completed === "Yes"
+                  );
 
                 return (
                   <tr
@@ -1615,10 +1615,10 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
                           height: "20px",
                           cursor:
                             isManualBooking &&
-                            selectedChecklistTasks.every(
-                              (task) =>
-                                task.manual_admin_completed === true
-                            )
+                              selectedChecklistTasks.every(
+                                (task) =>
+                                  task.manual_admin_completed === true
+                              )
                               ? "not-allowed"
                               : "pointer",
                           accentColor: "#16a34a"
@@ -2135,42 +2135,42 @@ const [selectedChecklistBooking, setSelectedChecklistBooking] = useState(null);
   }, []);
 
   // REALTIME: Refresh bookings when Partner updates a booking
-useEffect(() => {
-  console.warn("TEST: BOOKINGS REALTIME EFFECT STARTED");
+  useEffect(() => {
+    console.warn("TEST: BOOKINGS REALTIME EFFECT STARTED");
 
-  const channel = supabase
-    .channel("admin-bookings-realtime")
-    .on(
-      "postgres_changes",
-      {
-        event: "*",
-        schema: "public",
-        table: "bookings",
-      },
-      (payload) => {
-        console.log(
-          "BOOKING REALTIME UPDATE:",
-          payload.eventType,
-          payload.new?.id,
-          payload.new?.work_status
-        );
+    const channel = supabase
+      .channel("admin-bookings-realtime")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "bookings",
+        },
+        (payload) => {
+          console.log(
+            "BOOKING REALTIME UPDATE:",
+            payload.eventType,
+            payload.new?.id,
+            payload.new?.work_status
+          );
 
-        fetchBookings(true);
-      }
-    )
+          fetchBookings(true);
+        }
+      )
 
     console.warn("TEST: CHANNEL CREATED", channel);
-console.warn("TEST: ABOUT TO SUBSCRIBE");
+    console.warn("TEST: ABOUT TO SUBSCRIBE");
 
-channel.subscribe((status) => {
+    channel.subscribe((status) => {
       console.log("Bookings realtime status:", status);
     });
 
-  return () => {
-    supabase.removeChannel(channel);
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
+    return () => {
+      supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Keep a current copy of bookings for the separate work-completed alert listener.
   useEffect(() => {
@@ -2264,8 +2264,8 @@ channel.subscribe((status) => {
 
           const previousStatus = String(
             previousAlertState?.work_status ??
-              previousBooking?.work_status ??
-              ""
+            previousBooking?.work_status ??
+            ""
           )
             .trim()
             .toUpperCase();
@@ -2474,238 +2474,238 @@ channel.subscribe((status) => {
   };
 
 
-const ADDON_KEYS = [
-  "add_ons",
-  "addons",
-  "selected_addons",
-  "selected_add_ons",
-  "selectedAddons",
-  "selectedAddOns",
-  "addOns",
-  "add_on",
-  "addon",
-  "addon_list",
-  "add_ons_list",
-  "addonsList",
-  "addonList",
-  "addon_details",
-  "add_on_details",
-  "added_addons",
-  "added_add_ons",
-  "extra_services",
-  "extras",
-  "extra",
-  "additional_services",
-  "items",
-  "sub_services",
-  "subServices"
-];
+  const ADDON_KEYS = [
+    "add_ons",
+    "addons",
+    "selected_addons",
+    "selected_add_ons",
+    "selectedAddons",
+    "selectedAddOns",
+    "addOns",
+    "add_on",
+    "addon",
+    "addon_list",
+    "add_ons_list",
+    "addonsList",
+    "addonList",
+    "addon_details",
+    "add_on_details",
+    "added_addons",
+    "added_add_ons",
+    "extra_services",
+    "extras",
+    "extra",
+    "additional_services",
+    "items",
+    "sub_services",
+    "subServices"
+  ];
 
-const getMainServiceTitle = (b) => {
-  if (!b) return "N/A";
-  let services = b.services;
-  if (typeof services === "string") {
-    const trimmed = services.trim();
-    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
-      try {
-        services = JSON.parse(trimmed);
-      } catch (e) {
-        services = trimmed;
-      }
-    }
-  }
-
-  if (Array.isArray(services) && services.length > 0) {
-    const mainSvc =
-      services.find(
-        (s) =>
-          s &&
-          !s.is_addon &&
-          !s.isAddon &&
-          !s.is_add_on &&
-          String(s.service_type || s.type || "").toUpperCase() !== "ADDITIONAL SERVICES" &&
-          String(s.service_type || s.type || "").toUpperCase() !== "ADDON" &&
-          String(s.service_type || s.type || "").toUpperCase() !== "ADD_ON"
-      ) || services[0];
-
-    return (
-      mainSvc?.title ||
-      mainSvc?.name ||
-      mainSvc?.service_name ||
-      mainSvc?.service_title ||
-      mainSvc?.label ||
-      "N/A"
-    );
-  }
-
-  if (typeof services === "object" && services !== null) {
-    return (
-      services.title ||
-      services.name ||
-      services.service_name ||
-      services.service_title ||
-      services.label ||
-      "N/A"
-    );
-  }
-
-  if (typeof services === "string" && services.trim()) {
-    return services.trim();
-  }
-
-  return b.service_name || b.service_title || b.service || "N/A";
-};
-
-const getBookingAddOnsDisplay = (b) => {
-  if (!b) return "N/A";
-
-  const rawAddons = [];
-
-  const parseIfJson = (val) => {
-    if (typeof val === "string") {
-      const trimmed = val.trim();
+  const getMainServiceTitle = (b) => {
+    if (!b) return "N/A";
+    let services = b.services;
+    if (typeof services === "string") {
+      const trimmed = services.trim();
       if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
         try {
-          return JSON.parse(trimmed);
+          services = JSON.parse(trimmed);
         } catch (e) {
-          return val;
+          services = trimmed;
         }
       }
     }
-    return val;
+
+    if (Array.isArray(services) && services.length > 0) {
+      const mainSvc =
+        services.find(
+          (s) =>
+            s &&
+            !s.is_addon &&
+            !s.isAddon &&
+            !s.is_add_on &&
+            String(s.service_type || s.type || "").toUpperCase() !== "ADDITIONAL SERVICES" &&
+            String(s.service_type || s.type || "").toUpperCase() !== "ADDON" &&
+            String(s.service_type || s.type || "").toUpperCase() !== "ADD_ON"
+        ) || services[0];
+
+      return (
+        mainSvc?.title ||
+        mainSvc?.name ||
+        mainSvc?.service_name ||
+        mainSvc?.service_title ||
+        mainSvc?.label ||
+        "N/A"
+      );
+    }
+
+    if (typeof services === "object" && services !== null) {
+      return (
+        services.title ||
+        services.name ||
+        services.service_name ||
+        services.service_title ||
+        services.label ||
+        "N/A"
+      );
+    }
+
+    if (typeof services === "string" && services.trim()) {
+      return services.trim();
+    }
+
+    return b.service_name || b.service_title || b.service || "N/A";
   };
 
-  const collectAddons = (source) => {
-    if (!source) return;
-    const parsed = parseIfJson(source);
+  const getBookingAddOnsDisplay = (b) => {
+    if (!b) return "N/A";
 
-    if (Array.isArray(parsed)) {
-      parsed.forEach((item) => {
-        if (item) rawAddons.push(item);
-      });
-    } else if (typeof parsed === "object" && parsed !== null) {
-      rawAddons.push(parsed);
-    } else if (typeof parsed === "string" && parsed.trim() !== "") {
-      const str = parsed.trim();
-      if (str.includes(",") && !str.startsWith("http")) {
-        str.split(",").forEach((s) => {
-          if (s.trim()) rawAddons.push(s.trim());
+    const rawAddons = [];
+
+    const parseIfJson = (val) => {
+      if (typeof val === "string") {
+        const trimmed = val.trim();
+        if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+          try {
+            return JSON.parse(trimmed);
+          } catch (e) {
+            return val;
+          }
+        }
+      }
+      return val;
+    };
+
+    const collectAddons = (source) => {
+      if (!source) return;
+      const parsed = parseIfJson(source);
+
+      if (Array.isArray(parsed)) {
+        parsed.forEach((item) => {
+          if (item) rawAddons.push(item);
         });
-      } else {
-        rawAddons.push(str);
+      } else if (typeof parsed === "object" && parsed !== null) {
+        rawAddons.push(parsed);
+      } else if (typeof parsed === "string" && parsed.trim() !== "") {
+        const str = parsed.trim();
+        if (str.includes(",") && !str.startsWith("http")) {
+          str.split(",").forEach((s) => {
+            if (s.trim()) rawAddons.push(s.trim());
+          });
+        } else {
+          rawAddons.push(str);
+        }
+      }
+    };
+
+    const collectFromObject = (obj) => {
+      if (!obj || typeof obj !== "object") return;
+      ADDON_KEYS.forEach((key) => {
+        if (obj[key] !== undefined && obj[key] !== null) {
+          collectAddons(obj[key]);
+        }
+      });
+    };
+
+    // 1. Check direct booking-level properties
+    collectFromObject(b);
+
+    // 2. Check b.services (array, string, or object)
+    let services = parseIfJson(b.services);
+    if (services) {
+      if (!Array.isArray(services) && typeof services === "object") {
+        services = [services];
+      }
+      if (Array.isArray(services)) {
+        services.forEach((svc) => {
+          if (!svc) return;
+
+          collectFromObject(svc);
+
+          const sType = String(svc.service_type || svc.type || "").toUpperCase();
+          const isAddon =
+            svc.is_addon === true ||
+            svc.isAddon === true ||
+            svc.is_add_on === true ||
+            sType === "ADDON" ||
+            sType === "ADD_ON" ||
+            sType === "ADDITIONAL SERVICES" ||
+            sType === "ADDITIONAL_SERVICES";
+
+          if (isAddon) {
+            rawAddons.push(svc);
+          }
+        });
       }
     }
-  };
 
-  const collectFromObject = (obj) => {
-    if (!obj || typeof obj !== "object") return;
-    ADDON_KEYS.forEach((key) => {
-      if (obj[key] !== undefined && obj[key] !== null) {
-        collectAddons(obj[key]);
+    // 3. Check b.service (singular object or string)
+    let serviceObj = parseIfJson(b.service);
+    if (serviceObj && typeof serviceObj === "object") {
+      collectFromObject(serviceObj);
+    }
+
+    if (rawAddons.length === 0) {
+      return "N/A";
+    }
+
+    // 4. Format extracted add-ons
+    const formattedAddons = [];
+    const seenKeys = new Set();
+
+    rawAddons.forEach((addon) => {
+      if (!addon) return;
+
+      if (typeof addon === "string") {
+        const trimmed = addon.trim();
+        if (trimmed && trimmed.toLowerCase() !== "n/a" && !seenKeys.has(trimmed.toLowerCase())) {
+          seenKeys.add(trimmed.toLowerCase());
+          formattedAddons.push(trimmed);
+        }
+        return;
+      }
+
+      if (typeof addon === "object") {
+        const title =
+          addon.title ||
+          addon.name ||
+          addon.add_on_name ||
+          addon.addon_name ||
+          addon.service_name ||
+          addon.item_name ||
+          addon.label ||
+          addon.name_en ||
+          addon.addonTitle ||
+          addon.selected_addon_name ||
+          addon.addonName ||
+          "Add-on";
+
+        const rawPrice =
+          addon.price ??
+          addon.amount ??
+          addon.cost ??
+          addon.add_on_price ??
+          addon.addonPrice ??
+          addon.final_price ??
+          addon.unit_price;
+
+        let priceStr = "";
+        if (rawPrice !== undefined && rawPrice !== null && String(rawPrice).trim() !== "" && String(rawPrice).trim() !== "0") {
+          const pStr = String(rawPrice).trim();
+          priceStr = pStr.startsWith("₹") || pStr.startsWith("Rs") ? pStr : `₹${pStr}`;
+        }
+
+        const displayStr = priceStr ? `${title} - ${priceStr}` : title;
+        const dedupeKey = `${title}_${priceStr}`.toLowerCase();
+
+        if (!seenKeys.has(dedupeKey)) {
+          seenKeys.add(dedupeKey);
+          formattedAddons.push(displayStr);
+        }
       }
     });
+
+    return formattedAddons.length > 0 ? formattedAddons.join(", ") : "N/A";
   };
-
-  // 1. Check direct booking-level properties
-  collectFromObject(b);
-
-  // 2. Check b.services (array, string, or object)
-  let services = parseIfJson(b.services);
-  if (services) {
-    if (!Array.isArray(services) && typeof services === "object") {
-      services = [services];
-    }
-    if (Array.isArray(services)) {
-      services.forEach((svc) => {
-        if (!svc) return;
-
-        collectFromObject(svc);
-
-        const sType = String(svc.service_type || svc.type || "").toUpperCase();
-        const isAddon =
-          svc.is_addon === true ||
-          svc.isAddon === true ||
-          svc.is_add_on === true ||
-          sType === "ADDON" ||
-          sType === "ADD_ON" ||
-          sType === "ADDITIONAL SERVICES" ||
-          sType === "ADDITIONAL_SERVICES";
-
-        if (isAddon) {
-          rawAddons.push(svc);
-        }
-      });
-    }
-  }
-
-  // 3. Check b.service (singular object or string)
-  let serviceObj = parseIfJson(b.service);
-  if (serviceObj && typeof serviceObj === "object") {
-    collectFromObject(serviceObj);
-  }
-
-  if (rawAddons.length === 0) {
-    return "N/A";
-  }
-
-  // 4. Format extracted add-ons
-  const formattedAddons = [];
-  const seenKeys = new Set();
-
-  rawAddons.forEach((addon) => {
-    if (!addon) return;
-
-    if (typeof addon === "string") {
-      const trimmed = addon.trim();
-      if (trimmed && trimmed.toLowerCase() !== "n/a" && !seenKeys.has(trimmed.toLowerCase())) {
-        seenKeys.add(trimmed.toLowerCase());
-        formattedAddons.push(trimmed);
-      }
-      return;
-    }
-
-    if (typeof addon === "object") {
-      const title =
-        addon.title ||
-        addon.name ||
-        addon.add_on_name ||
-        addon.addon_name ||
-        addon.service_name ||
-        addon.item_name ||
-        addon.label ||
-        addon.name_en ||
-        addon.addonTitle ||
-        addon.selected_addon_name ||
-        addon.addonName ||
-        "Add-on";
-
-      const rawPrice =
-        addon.price ??
-        addon.amount ??
-        addon.cost ??
-        addon.add_on_price ??
-        addon.addonPrice ??
-        addon.final_price ??
-        addon.unit_price;
-
-      let priceStr = "";
-      if (rawPrice !== undefined && rawPrice !== null && String(rawPrice).trim() !== "" && String(rawPrice).trim() !== "0") {
-        const pStr = String(rawPrice).trim();
-        priceStr = pStr.startsWith("₹") || pStr.startsWith("Rs") ? pStr : `₹${pStr}`;
-      }
-
-      const displayStr = priceStr ? `${title} - ${priceStr}` : title;
-      const dedupeKey = `${title}_${priceStr}`.toLowerCase();
-
-      if (!seenKeys.has(dedupeKey)) {
-        seenKeys.add(dedupeKey);
-        formattedAddons.push(displayStr);
-      }
-    }
-  });
-
-  return formattedAddons.length > 0 ? formattedAddons.join(", ") : "N/A";
-};
 
   // Helper to extract numeric value from strings like "₹1,000"
   const cleanNumeric = (val) => {
@@ -2749,100 +2749,100 @@ const getBookingAddOnsDisplay = (b) => {
     setShowAddonDropdown(false);
   };
   const getManualBookingChecklistItems = (serviceName) => {
-  const name = String(serviceName || "").toLowerCase();
+    const name = String(serviceName || "").toLowerCase();
 
-  if (name.includes("bathroom")) {
+    if (name.includes("bathroom")) {
+      return [
+        "Customer & property details verified",
+        "Floor, tiles, toilet, wash basin & fixtures cleaned",
+        "Mirrors & glass surfaces wiped",
+        "Exhaust fan & switchboards cleaned",
+        "Cobwebs removed",
+        "Final inspection completed & customer satisfied"
+      ];
+    }
+
+    if (name.includes("kitchen")) {
+      return [
+        "Customer & property details verified",
+        "Countertop, hob, sink, cabinets & floor completed",
+        "Chimney exterior wiped",
+        "Appliances exterior wiped",
+        "Exhaust fan & switchboards cleaned",
+        "Final inspection completed & customer satisfied"
+      ];
+    }
+
+    if (name.includes("sofa")) {
+      return [
+        "Customer & property details verified",
+        "Dry vacuuming of sofa completed",
+        "Shampooing and wet vacuuming completed",
+        "Cushions properly cleaned",
+        "Stains spot-treated",
+        "Final inspection completed & customer satisfied"
+      ];
+    }
+
+    if (name.includes("window") || name.includes("door")) {
+      return [
+        "Customer & property details verified",
+        "Window panes & glass cleaned",
+        "Tracks & channels vacuumed/wiped",
+        "Mosquito nets brushed",
+        "Doors & frames wiped",
+        "Final inspection completed & customer satisfied"
+      ];
+    }
+
+    if (name.includes("balcony")) {
+      return [
+        "Customer & property details verified",
+        "Balcony floor scrubbed & washed",
+        "Railings wiped & cleaned",
+        "Cobwebs removed",
+        "Final inspection completed & customer satisfied"
+      ];
+    }
+
+    if (name.includes("express")) {
+      return [
+        "Customer & property details verified",
+        "Dry dusting of all rooms completed",
+        "Floors swept and mopped",
+        "Basic tidying up of living spaces",
+        "Final inspection completed & customer satisfied"
+      ];
+    }
+
     return [
       "Customer & property details verified",
-      "Floor, tiles, toilet, wash basin & fixtures cleaned",
-      "Mirrors & glass surfaces wiped",
-      "Exhaust fan & switchboards cleaned",
-      "Cobwebs removed",
+      "Required areas/access confirmed",
+      "Service scope & requirements confirmed",
+      "Cleaning materials & equipment available",
+      "All selected service areas cleaned",
+      "Floors, surfaces & fixtures properly cleaned",
+      "Kitchen, bathrooms & applicable areas completed",
+      "Windows/glass & included tasks completed",
+      "No visible dirt or waste left behind",
       "Final inspection completed & customer satisfied"
     ];
-  }
-
-  if (name.includes("kitchen")) {
-    return [
-      "Customer & property details verified",
-      "Countertop, hob, sink, cabinets & floor completed",
-      "Chimney exterior wiped",
-      "Appliances exterior wiped",
-      "Exhaust fan & switchboards cleaned",
-      "Final inspection completed & customer satisfied"
-    ];
-  }
-
-  if (name.includes("sofa")) {
-    return [
-      "Customer & property details verified",
-      "Dry vacuuming of sofa completed",
-      "Shampooing and wet vacuuming completed",
-      "Cushions properly cleaned",
-      "Stains spot-treated",
-      "Final inspection completed & customer satisfied"
-    ];
-  }
-
-  if (name.includes("window") || name.includes("door")) {
-    return [
-      "Customer & property details verified",
-      "Window panes & glass cleaned",
-      "Tracks & channels vacuumed/wiped",
-      "Mosquito nets brushed",
-      "Doors & frames wiped",
-      "Final inspection completed & customer satisfied"
-    ];
-  }
-
-  if (name.includes("balcony")) {
-    return [
-      "Customer & property details verified",
-      "Balcony floor scrubbed & washed",
-      "Railings wiped & cleaned",
-      "Cobwebs removed",
-      "Final inspection completed & customer satisfied"
-    ];
-  }
-
-  if (name.includes("express")) {
-    return [
-      "Customer & property details verified",
-      "Dry dusting of all rooms completed",
-      "Floors swept and mopped",
-      "Basic tidying up of living spaces",
-      "Final inspection completed & customer satisfied"
-    ];
-  }
-
-  return [
-    "Customer & property details verified",
-    "Required areas/access confirmed",
-    "Service scope & requirements confirmed",
-    "Cleaning materials & equipment available",
-    "All selected service areas cleaned",
-    "Floors, surfaces & fixtures properly cleaned",
-    "Kitchen, bathrooms & applicable areas completed",
-    "Windows/glass & included tasks completed",
-    "No visible dirt or waste left behind",
-    "Final inspection completed & customer satisfied"
-  ];
-};
+  };
   const handleCreateManualBooking = async () => {
-  if (
-  !String(manualBookingData.user_name || "").trim() ||
-  !String(manualBookingData.user_phone || "").trim() ||
-  !String(manualBookingData.address || "").trim() ||
-  !String(manualBookingData.service_id || "").trim() ||
-  !String(manualBookingData.booking_date || "").trim() ||
-  !String(manualBookingData.booking_time || "").trim()
-) {
-  triggerModal(
-    "Incomplete Data",
-    "Please enter all required fields, including Address, Date, and Time."
-  );
-  return;
-}
+    if (
+      !String(manualBookingData.user_name || "").trim() ||
+      !String(manualBookingData.user_phone || "").trim() ||
+      !String(manualBookingData.address || "").trim() ||
+      !String(manualBookingData.service_id || "").trim() ||
+      !String(manualBookingData.booking_date || "").trim() ||
+      !String(manualBookingData.booking_time || "").trim()
+    ) {
+      triggerModal(
+        "Incomplete Data",
+        "Please enter all required fields, including Address, Date, and Time."
+      );
+      return;
+    }
 
     if (
       !validateManualBookingTime(
@@ -3045,15 +3045,15 @@ END TEMPORARILY DISABLED T&C + OTP FLOW
         (window.crypto && window.crypto.randomUUID)
           ? window.crypto.randomUUID()
           : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(
-              /[018]/g,
-              c =>
-                (c ^
-                  (window.crypto.getRandomValues(
-                    new Uint8Array(1)
-                  )[0] &
-                    (15 >> (c / 4))))
-                  .toString(16)
-            );
+            /[018]/g,
+            c =>
+              (c ^
+                (window.crypto.getRandomValues(
+                  new Uint8Array(1)
+                )[0] &
+                  (15 >> (c / 4))))
+                .toString(16)
+          );
       const nowIso = new Date().toISOString();
 
       const directBookingPayload = {
@@ -3785,11 +3785,11 @@ END TEMPORARILY DISABLED T&C + OTP FLOW
                   };
                 }
 
-              acc[curr.booking_id].tasks.push({
-  task_title: curr.task_title,
-  customer_completed: curr.customer_completed,
-  manual_admin_completed: curr.manual_admin_completed
-});
+                acc[curr.booking_id].tasks.push({
+                  task_title: curr.task_title,
+                  customer_completed: curr.customer_completed,
+                  manual_admin_completed: curr.manual_admin_completed
+                });
 
                 return acc;
               }, {})
@@ -4701,9 +4701,9 @@ END TEMPORARILY DISABLED T&C + OTP FLOW
   );
 
   const completedBookings = bookings.filter((b) =>
-  b.work_status?.trim()?.toUpperCase() === "COMPLETED" &&
-  !["REFUND_PENDING", "REFUND_INITIATED", "REFUNDED"].includes(b.refund_status)
-);
+    b.work_status?.trim()?.toUpperCase() === "COMPLETED" &&
+    !["REFUND_PENDING", "REFUND_INITIATED", "REFUNDED"].includes(b.refund_status)
+  );
 
   // SOURCE OF TRUTH:
   // Under Review is determined only by work_status.
@@ -4720,17 +4720,17 @@ END TEMPORARILY DISABLED T&C + OTP FLOW
     !["REFUND_PENDING", "REFUND_INITIATED", "REFUNDED"].includes(b.refund_status)
   );
 
-const assignedBookings = bookings.filter((b) =>
-  b.work_status?.toUpperCase() === "ASSIGNED" &&
-  b.work_status?.toLowerCase() !== "cancelled" &&
-  String(b.payment_status || "").trim().toLowerCase() !== "failed" &&
-  !["REFUND_PENDING", "REFUND_INITIATED", "REFUNDED"].includes(b.refund_status) &&
-  b.work_status?.toUpperCase() !== "RESCHEDULED"
-);
+  const assignedBookings = bookings.filter((b) =>
+    b.work_status?.toUpperCase() === "ASSIGNED" &&
+    b.work_status?.toLowerCase() !== "cancelled" &&
+    String(b.payment_status || "").trim().toLowerCase() !== "failed" &&
+    !["REFUND_PENDING", "REFUND_INITIATED", "REFUNDED"].includes(b.refund_status) &&
+    b.work_status?.toUpperCase() !== "RESCHEDULED"
+  );
 
   const paymentFailedBookings = bookings.filter((b) =>
-  String(b.payment_status || "").trim().toLowerCase() === "failed"
-);
+    String(b.payment_status || "").trim().toLowerCase() === "failed"
+  );
 
   const rejectedBookings = bookings.filter((b) =>
     (b.staff_response?.trim()?.toUpperCase() === "REJECT" ||
@@ -4752,17 +4752,17 @@ const assignedBookings = bookings.filter((b) =>
     b.work_status?.toUpperCase() !== "RESCHEDULED" &&
     b.assigned_staff_email && b.staff_response?.trim()?.toUpperCase() === "PENDING"
   );
-const unassignedBookings = bookings.filter((b) =>
-  b.work_status?.toUpperCase() !== "ASSIGNED" &&
-  b.work_status?.toLowerCase() !== "cancelled" &&
-  String(b.payment_status || "").trim().toLowerCase() !== "failed" &&
-  !["REFUND_PENDING", "REFUND_INITIATED", "REFUNDED"].includes(b.refund_status) &&
-  b.work_status?.toLowerCase() !== "completed" &&
-  !b.work_ended_at &&
-  b.work_status?.toUpperCase() !== "RESCHEDULED" &&
-  !(b.staff_response?.trim()?.toUpperCase() === "REJECT" || b.staff_response?.trim()?.toUpperCase() === "REJECTED") &&
-  !(b.assigned_staff_email && b.staff_response?.trim()?.toUpperCase() === "PENDING")
-);
+  const unassignedBookings = bookings.filter((b) =>
+    b.work_status?.toUpperCase() !== "ASSIGNED" &&
+    b.work_status?.toLowerCase() !== "cancelled" &&
+    String(b.payment_status || "").trim().toLowerCase() !== "failed" &&
+    !["REFUND_PENDING", "REFUND_INITIATED", "REFUNDED"].includes(b.refund_status) &&
+    b.work_status?.toLowerCase() !== "completed" &&
+    !b.work_ended_at &&
+    b.work_status?.toUpperCase() !== "RESCHEDULED" &&
+    !(b.staff_response?.trim()?.toUpperCase() === "REJECT" || b.staff_response?.trim()?.toUpperCase() === "REJECTED") &&
+    !(b.assigned_staff_email && b.staff_response?.trim()?.toUpperCase() === "PENDING")
+  );
 
 
   const applyFilters = (data) =>
@@ -4829,22 +4829,22 @@ const unassignedBookings = bookings.filter((b) =>
       : activeTab === "unassigned"
         ? getSortedList(applyFilters(unassignedBookings), "unassigned")
         : activeTab === "assigned"
-        ? getSortedList(applyFilters(assignedBookings), "assigned")
-        : activeTab === "payment_failed"
-        ? getSortedList(applyFilters(paymentFailedBookings), "payment_failed")
-          : activeTab === "rejected"
-            ? getSortedList(applyFilters(rejectedBookings), "rejected")
-            : activeTab === "waiting"
-              ? getSortedList(applyFilters(waitingBookings), "waiting")
-              : activeTab === "under_review"
-                ? getSortedList(applyFilters(underReviewBookings), "under_review")
-                : activeTab === "completed"
-                  ? getSortedList(applyFilters(completedBookings), "completed")
-                  : activeTab === "refund_management"
-                  ? getSortedList(applyFilters(refundPendingBookings), "refund_management")
-                  : activeTab === "rescheduled"
-                    ? getSortedList(applyFilters(rescheduledBookings), "rescheduled")
-                    : getSortedList(applyFilters(cancelledBookings), "cancelled");
+          ? getSortedList(applyFilters(assignedBookings), "assigned")
+          : activeTab === "payment_failed"
+            ? getSortedList(applyFilters(paymentFailedBookings), "payment_failed")
+            : activeTab === "rejected"
+              ? getSortedList(applyFilters(rejectedBookings), "rejected")
+              : activeTab === "waiting"
+                ? getSortedList(applyFilters(waitingBookings), "waiting")
+                : activeTab === "under_review"
+                  ? getSortedList(applyFilters(underReviewBookings), "under_review")
+                  : activeTab === "completed"
+                    ? getSortedList(applyFilters(completedBookings), "completed")
+                    : activeTab === "refund_management"
+                      ? getSortedList(applyFilters(refundPendingBookings), "refund_management")
+                      : activeTab === "rescheduled"
+                        ? getSortedList(applyFilters(rescheduledBookings), "rescheduled")
+                        : getSortedList(applyFilters(cancelledBookings), "cancelled");
 
   const totalPages = Math.ceil(visibleBookings.length / rowsPerPage);
   const paginatedBookings = visibleBookings.slice(
@@ -7356,15 +7356,15 @@ const unassignedBookings = bookings.filter((b) =>
             <div style={{ fontSize: "42px", marginBottom: "10px" }}>✓</div>
 
             <h3
-  style={{
-    margin: "0 0 12px",
-    fontSize: "22px",
-    fontWeight: "800",
-    color: "#0f172a",
-  }}
->
-  Partner Completed Work
-</h3>
+              style={{
+                margin: "0 0 12px",
+                fontSize: "22px",
+                fontWeight: "800",
+                color: "#0f172a",
+              }}
+            >
+              Partner Completed Work
+            </h3>
 
             <p
               style={{
@@ -7376,34 +7376,34 @@ const unassignedBookings = bookings.filter((b) =>
             >
               The partner has completed the work. Please complete the user checklist.
             </p>
-{workCompletedBooking?.id && (
-  <p
-    style={{
-      margin: "0 0 22px",
-      color: "#64748b",
-      fontSize: "13px",
-      lineHeight: "1.6",
-    }}
-  >
-    <strong>Booking ID:</strong> {workCompletedBooking.id}
-    <br />
+            {workCompletedBooking?.id && (
+              <p
+                style={{
+                  margin: "0 0 22px",
+                  color: "#64748b",
+                  fontSize: "13px",
+                  lineHeight: "1.6",
+                }}
+              >
+                <strong>Booking ID:</strong> {workCompletedBooking.id}
+                <br />
 
-    <strong>Customer Name:</strong>{" "}
-    {workCompletedBooking?.customer_name || "N/A"}
-    <br />
+                <strong>Customer Name:</strong>{" "}
+                {workCompletedBooking?.customer_name || "N/A"}
+                <br />
 
-    <strong>Customer Mobile:</strong>{" "}
-    {workCompletedBooking?.phone_number ||
-      workCompletedBooking?.user_phone ||
-      workCompletedBooking?.customer_phone ||
-      workCompletedBooking?.phone ||
-      "N/A"}
-    <br />
+                <strong>Customer Mobile:</strong>{" "}
+                {workCompletedBooking?.phone_number ||
+                  workCompletedBooking?.user_phone ||
+                  workCompletedBooking?.customer_phone ||
+                  workCompletedBooking?.phone ||
+                  "N/A"}
+                <br />
 
-    <strong>Assigned Staff:</strong>{" "}
-    {workCompletedBooking?.assigned_staff_email || "N/A"}
-  </p>
-)}
+                <strong>Assigned Staff:</strong>{" "}
+                {workCompletedBooking?.assigned_staff_email || "N/A"}
+              </p>
+            )}
             <button
               type="button"
               onClick={async () => {
@@ -7484,7 +7484,7 @@ const unassignedBookings = bookings.filter((b) =>
                     tasks: orderedChecklistRows.map((task, index) => ({
                       task_index:
                         task?.task_index !== undefined &&
-                        task?.task_index !== null
+                          task?.task_index !== null
                           ? task.task_index
                           : index,
                       task_title: task.task_title,
@@ -7504,7 +7504,7 @@ const unassignedBookings = bookings.filter((b) =>
                     if (exists) {
                       return prev.map((item) =>
                         String(item.booking_id) ===
-                        String(completedBookingId)
+                          String(completedBookingId)
                           ? checklist
                           : item
                       );
@@ -7524,7 +7524,7 @@ const unassignedBookings = bookings.filter((b) =>
                   triggerModal(
                     "Checklist Error",
                     error?.message ||
-                      "Could not open the user checklist."
+                    "Could not open the user checklist."
                   );
                 }
               }}
@@ -7818,11 +7818,11 @@ const unassignedBookings = bookings.filter((b) =>
             Assigned ({assignedBookings.length})
           </span>
           <span
-  className={activeTab === "payment_failed" ? "active" : ""}
-  onClick={() => setActiveTab("payment_failed")}
->
-  Payment Failed ({paymentFailedBookings.length})
-</span>
+            className={activeTab === "payment_failed" ? "active" : ""}
+            onClick={() => setActiveTab("payment_failed")}
+          >
+            Payment Failed ({paymentFailedBookings.length})
+          </span>
           <span
             className={activeTab === "under_review" ? "active" : ""}
             onClick={() => setActiveTab("under_review")}
@@ -8382,18 +8382,18 @@ const unassignedBookings = bookings.filter((b) =>
                                   cl.bookings?.platform === "Admin Manual"
                                     ? t.manual_admin_completed === true
                                     : (
-                                        t.customer_completed === true ||
-                                        t.customer_completed === "Completed" ||
-                                        t.customer_completed === "Yes"
-                                      )
+                                      t.customer_completed === true ||
+                                      t.customer_completed === "Completed" ||
+                                      t.customer_completed === "Yes"
+                                    )
                                 ).length} Completed / {cl.tasks.filter((t) =>
                                   cl.bookings?.platform === "Admin Manual"
                                     ? t.manual_admin_completed !== true
                                     : !(
-                                        t.customer_completed === true ||
-                                        t.customer_completed === "Completed" ||
-                                        t.customer_completed === "Yes"
-                                      )
+                                      t.customer_completed === true ||
+                                      t.customer_completed === "Completed" ||
+                                      t.customer_completed === "Yes"
+                                    )
                                 ).length} Pending
                               </span>
                             </td>
@@ -8412,10 +8412,10 @@ const unassignedBookings = bookings.filter((b) =>
                                     cl.bookings?.platform === "Admin Manual"
                                       ? cl.tasks[0]?.manual_admin_completed === true
                                       : (
-                                          cl.tasks[0]?.customer_completed === true ||
-                                          cl.tasks[0]?.customer_completed === "Completed" ||
-                                          cl.tasks[0]?.customer_completed === "Yes"
-                                        )
+                                        cl.tasks[0]?.customer_completed === true ||
+                                        cl.tasks[0]?.customer_completed === "Completed" ||
+                                        cl.tasks[0]?.customer_completed === "Yes"
+                                      )
                                   )
                                     ? "#dcfce7"
                                     : "#fef9c3",
@@ -8423,10 +8423,10 @@ const unassignedBookings = bookings.filter((b) =>
                                     cl.bookings?.platform === "Admin Manual"
                                       ? cl.tasks[0]?.manual_admin_completed === true
                                       : (
-                                          cl.tasks[0]?.customer_completed === true ||
-                                          cl.tasks[0]?.customer_completed === "Completed" ||
-                                          cl.tasks[0]?.customer_completed === "Yes"
-                                        )
+                                        cl.tasks[0]?.customer_completed === true ||
+                                        cl.tasks[0]?.customer_completed === "Completed" ||
+                                        cl.tasks[0]?.customer_completed === "Yes"
+                                      )
                                   )
                                     ? "#166534"
                                     : "#ca8a04",
@@ -8436,10 +8436,10 @@ const unassignedBookings = bookings.filter((b) =>
                                   cl.bookings?.platform === "Admin Manual"
                                     ? cl.tasks[0]?.manual_admin_completed === true
                                     : (
-                                        cl.tasks[0]?.customer_completed === true ||
-                                        cl.tasks[0]?.customer_completed === "Completed" ||
-                                        cl.tasks[0]?.customer_completed === "Yes"
-                                      )
+                                      cl.tasks[0]?.customer_completed === true ||
+                                      cl.tasks[0]?.customer_completed === "Completed" ||
+                                      cl.tasks[0]?.customer_completed === "Yes"
+                                    )
                                 )
                                   ? "Completed"
                                   : "Pending"}
@@ -8538,6 +8538,7 @@ const unassignedBookings = bookings.filter((b) =>
                                   margin: 0,
                                   fontSize: "12px",
                                   height: "30px",
+                                  
                                   backgroundColor: "#facc15",
                                   color: "#000"
                                 }}
@@ -8609,12 +8610,14 @@ const unassignedBookings = bookings.filter((b) =>
                           {b.refund_status !== "REFUNDED" && b.refund_status !== "REFUND_PENDING" && b.refund_status !== "REFUND_INITIATED" && (
                             <button
                               className="allot-btn"
-                              disabled={b.payment_status !== "paid"}
+                              disabled={!["paid", "partial"].includes(b.payment_status)}
                               style={{
                                 backgroundColor: "#22c55e",
                                 color: "#fff",
-                                opacity: b.payment_status === "paid" ? 1 : 0.5,
-                                cursor: b.payment_status === "paid" ? "pointer" : "not-allowed",
+                                opacity: ["paid", "partial"].includes(b.payment_status) ? 1 : 0.5,
+                                cursor: ["paid", "partial"].includes(b.payment_status)
+                                  ? "pointer"
+                                  : "not-allowed",
                                 fontSize: "14px",
                                 padding: "8px 15px",
                                 minWidth: "130px",
@@ -9270,21 +9273,21 @@ const unassignedBookings = bookings.filter((b) =>
 
                               {activeTab === "under_review" &&
                                 b.platform === "Admin Manual" && (
-                                <button
-                                  type="button"
-                                  className="allot-btn"
-                                  style={{
-                                    marginTop: "8px",
-                                    backgroundColor: "#eff6ff",
-                                    color: "#1d4ed8",
-                                    border: "1px solid #bfdbfe",
-                                    fontWeight: "700",
-                                  }}
-                                  onClick={() => handleViewChecklistFromUnderReview(b)}
-                                >
-                                  View Checklist
-                                </button>
-                              )}
+                                  <button
+                                    type="button"
+                                    className="allot-btn"
+                                    style={{
+                                      marginTop: "8px",
+                                      backgroundColor: "#eff6ff",
+                                      color: "#1d4ed8",
+                                      border: "1px solid #bfdbfe",
+                                      fontWeight: "700",
+                                    }}
+                                    onClick={() => handleViewChecklistFromUnderReview(b)}
+                                  >
+                                    View Checklist
+                                  </button>
+                                )}
                             </td>
                             <td>
                               <button
